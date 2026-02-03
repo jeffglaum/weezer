@@ -1,1640 +1,1751 @@
-*/
-*/   SBC Memory Map
-*/
-*/	$0000	+---------------+
-*/              |  1024 bytes	|
-*/              |  on-chip RAM	| <- Stack
-*/	$03FF	|---------------|
-*/              |               |
-*/              |    Unused     |
-*/	$1000	|---------------|
-*/              |   96 bytes	|
-*/              |   registers	|
-*/	$105F	|---------------|
-*/              |               |
-*/              |               |
-*/              |               |
-*/              |    Unused     |
-*/              |               |
-*/              |               |
-*/              |               |
-*/              |               |
-*/              |               |
-*/	$D000	|---------------|
-*/              |               |
-*/              |  8192 bytes	|
-*/              | off-chip RAM	| <- Program memory
-*/              |               |
-*/              |               |
-*/	$F000	|---------------|
-*/              |               |
-*/              |  4096 bytes	|
-*/              | off-chip ROM	| <- Boot code and interrupt vectors
-*/              |               |
-*/              |               |
-*/	$FFFF	+---------------+
-*/
-
-*///////////////
-*// Constants //
-*///////////////
-
-*// Registers
-*//
-SPCR        EQU $1028       ; SPI control register
-BAUD        EQU $102B       ; SCI BAUD register
-SCCR1       EQU $102C       ; SCI control register #1
-SCCR2       EQU $102D       ; SCI control register #2
-SCSR        EQU $102E       ; SCI control status register
-SCDR        EQU $102F       ; SCI data register
-
-DISPC       EQU $C000       ; LCD control register
-DISPD       EQU $C001       ; LCD data register
-
-*// SCI Constants
-*//
-BAUD_RATE   EQU $30         ; 9600 baud
-SCCR2_VAL   EQU $0C         ; SCCR2 value
-TDRE        EQU $80         ; Transmit data register empty
-
-*// ASCII Constants
-*//
-SPACE       EQU 32          ; Space
-CR          EQU 13          ; CR
-LF          EQU 10          ; LF
-DEL         EQU 127         ; DEL
-BS          EQU 8           ; BS
-BELL        EQU 7           ; BELL
-
-*// S-Record Constants
-*//
-SR_MAX_LINE EQU 74          ; Maximum S-Record line size (S1PPAAAAdddd.ddCC)
-SR_PAIROFST EQU 2           ; S-Record line character pair count offset
-SR_ADDROFST EQU 4           ; S-Record address offset
-SR_DATAOFST EQU 8           ; S-Record start of data offset
-
-
-STACK_BASE  EQU $80         ; Stack pointer base
-
-*// Input buffer and buffer length variables
-*//
-            ORG     $D000
-TEMP        RMB     $1      ; Temporary variable
-BIOSRTN     RMB     $2      ; Address of BIOS routine to execute
-INBUFFLEN   RMB     $1      ; Input buffer length
-INBUFF      RMB     $50     ; Input buffer
-FREERAM     EQU     *
-
-
-*//////////////////
-*// Main routine //
-*//////////////////
-            ORG     $F000           ; Locate program at $F000
-WEEZER      LDS     #STACK_BASE     ; Locate stack pointer
->> f000:  8e 00 80
-            JSR     CLRINSTRING     ; Clear user input string and length
->> f003:  bd f0 47
-            LDAA    #0
->> f006:  86 00
-            JSR     SERIAL_INIT     ; Initialize SCI port
->> f008:  bd f0 52
-            JSR     LCD_INIT        ; Initialize LCD display
->> f00b:  bd f3 18
-            LDX     #WELCOMESTR     ; Load welcome string for display
->> f00e:  ce f3 b2
-            JSR     SERWRITESTR     ; Write string to serial port
->> f011:  bd f0 64
-            JSR     LCDWRITESTR     ; Write string to LCD
->> f014:  bd f3 69
-            LDX     #COPYRGHTSTR    ; Load copyright string for display
->> f017:  ce f3 c6
-            JSR     SERWRITESTR     ; Write string to serial port
->> f01a:  bd f0 64
-            JSR     SERCLRINPUT     ; Clear SCI input register
->> f01d:  bd f0 38
-PROMPT      JSR     CLRINSTRING     ; Clear input string buffer and length
->> f020:  bd f0 47
-            LDX     #PROMPTSTR      ; Load prompt string
->> f023:  ce f4 9e
-            JSR     SERWRITESTR     ;
->> f026:  bd f0 64
-            JSR     SERREADSTR      ; Get user's input
->> f029:  bd f0 80
-            JSR     PARSECMDSTR     ; Determine command specified
->> f02c:  bd f0 cc
-            CMPA    #0              ; If command not found - don't execute
->> f02f:  81 00
-            BEQ     PROMPT          ;
->> f031:  27 ed
-            JSR     EXECUTECMD      ; Execute command
->> f033:  bd f1 02
-            BRA     PROMPT          ;
->> f036:  20 e8
-
-
-*/////////////////////////////////////////
-*// Read SCI receive buffer until empty //
-*/////////////////////////////////////////
-SERCLRINPUT PSHA
->> f038:  36
-SERCLR1     LDAA    SCSR
->> f039:  b6 10 2e
-            ANDA    #$20
->> f03c:  84 20
-            BEQ     SERCLRDONE
->> f03e:  27 05
-            LDAA    SCDR
->> f040:  b6 10 2f
-            BRA     SERCLR1
->> f043:  20 f4
-SERCLRDONE  PULA
->> f045:  32
-            RTS
->> f046:  39
-            
-            
-*///////////////////////////////
-*/ Clear command input string //
-*///////////////////////////////
-CLRINSTRING PSHA                    ; Save A
->> f047:  36
-            LDAA    #0              ;
->> f048:  86 00
-            STAA    INBUFF          ; Clear input buffer
->> f04a:  b7 d0 04
-            STAA    INBUFFLEN       ; Zero input buffer length
->> f04d:  b7 d0 03
-            PULA                    ; Restore A
->> f050:  32
-            RTS
->> f051:  39
-
-
-*////////////////////////////
-*// Initialize serial port //
-*////////////////////////////
-SERIAL_INIT PSHA                    ; Save A
->> f052:  36
-            LDAA    #BAUD_RATE      ; Set baud rate to 9600 (assume 8Mhz xtal)
->> f053:  86 30
-            STAA    BAUD            ;
->> f055:  b7 10 2b
-            LDAA    #0              ; Clear SCCR1 (1 start, 8 data, 1 stop)
->> f058:  86 00
-            STAA    SCCR1           ;
->> f05a:  b7 10 2c
-            LDAA    #SCCR2_VAL      ; Enable TxD and RxD
->> f05d:  86 0c
-            STAA    SCCR2           ;
->> f05f:  b7 10 2d
-            PULA                    ; Restore A
->> f062:  32
-            RTS                     ; Done
->> f063:  39
-
-
-*//////////////////////////////
-*// Write serial port string //
-*//////////////////////////////
-SERWRITESTR PSHX                    ; Save X
->> f064:  3c
-            PSHB                    ; Save B
->> f065:  37
-SERSTRLOOP  LDAB    0,X             ; Get next character to be transmitted
->> f066:  e6 00
-            BEQ     SERSTRDONE      ; If NULL terminator, done
->> f068:  27 06
-            JSR     SERWRITECHR     ; Write character to SCI
->> f06a:  bd f0 73
-            INX                     ; Next character
->> f06d:  08
-            BRA     SERSTRLOOP      ; Continue
->> f06e:  20 f6
-SERSTRDONE  PULB                    ; Restore B
->> f070:  33
-            PULX                    ; Restore X
->> f071:  38
-            RTS                     ; Done
->> f072:  39
-
-
-*/////////////////////////////////
-*// Write serial port character //
-*/////////////////////////////////
-SERWRITECHR PSHA                    ; Save A
->> f073:  36
-SERCHRWAIT  LDAA    SCSR            ; Transmit register empty?
->> f074:  b6 10 2e
-            ANDA    #TDRE           ;
->> f077:  84 80
-            BEQ     SERCHRWAIT      ;
->> f079:  27 f9
-            STAB    SCDR            ; Transmit contents of B
->> f07b:  f7 10 2f
-            PULA                    ; Restore A
->> f07e:  32
-            RTS                     ; Done
->> f07f:  39
-
-
-*//////////////////////////////////
-*// Read string from serial port //
-*//////////////////////////////////
-SERREADSTR  PSHA                    ; Save A
->> f080:  36
-            PSHB                    ; Save B
->> f081:  37
-            PSHX                    ; Save X
->> f082:  3c
-SERREAD1    JSR     SERREADCHR      ; Read character from SCI
->> f083:  bd f0 ba
-            CMPA    #BS             ; Backspace - delete last character
->> f086:  81 08
-            BEQ     SERBKSPACE      ;
->> f088:  27 21
-            CMPA    #CR             ; Carriage return - NULL terminate string
->> f08a:  81 0d
-            BNE     SERREAD15       ;
->> f08c:  26 04
-            LDAA    #0              ; NULL-terminate
->> f08e:  86 00
-            BRA     SERREAD2        ;
->> f090:  20 06
-SERREAD15   CMPA    #LF             ; Line feed - NULL terminate string
->> f092:  81 0a
-            BNE     SERREAD2        ;
->> f094:  26 02
-            LDAA    #0              ; NULL-terminate
->> f096:  86 00
-SERREAD2    LDX     #INBUFF         ; Get input buffer
->> f098:  ce d0 04
-            LDAB    INBUFFLEN       ; Get input buffer length
->> f09b:  f6 d0 03
-            ABX                     ; Offset past current data
->> f09e:  3a
-            STAA    0,X             ; Store character in buffer
->> f09f:  a7 00
-            INCB                    ; Increment string length
->> f0a1:  5c
-            STAB    INBUFFLEN       ; Store string length
->> f0a2:  f7 d0 03
-            CMPA    #0              ; If NULL (end of string), execute command
->> f0a5:  81 00
-            BNE     SERREAD1        ; If NOT CR - continue
->> f0a7:  26 da
-            BRA     SERREADDONE     ; CR - Done
->> f0a9:  20 0b
-SERBKSPACE  LDAA    INBUFFLEN       ; Get character string length
->> f0ab:  b6 d0 03
-            BEQ     SERREAD1        ; If string length is zero - done
->> f0ae:  27 d3
-            DECA                    ; Decrement string length
->> f0b0:  4a
-            STAA    INBUFFLEN       ; Store new string length
->> f0b1:  b7 d0 03
-            BRA     SERREAD1        ; Continue
->> f0b4:  20 cd
-SERREADDONE PULX                    ; Restore X
->> f0b6:  38
-            PULB                    ; Restore B
->> f0b7:  33
-            PULA                    ; Restore A
->> f0b8:  32
-            RTS                     ; Done
->> f0b9:  39
-
-
-*/////////////////////////////////////
-*/ Read character from serial port  //
-*/ OUT: A = character read from SCI //
-*/////////////////////////////////////
-SERREADCHR  PSHB                    ; Save B
->> f0ba:  37
-SERREADCHR1 LDAA    SCSR            ; Check for received character
->> f0bb:  b6 10 2e
-            ANDA    #$20            ;
->> f0be:  84 20
-            BEQ     SERREADCHR1     ; No characters - wait
->> f0c0:  27 f9
-            LDAA    SCDR            ;
->> f0c2:  b6 10 2f
-            PSHA                    ; Copy A -> B
->> f0c5:  36
-            PULB                    ;
->> f0c6:  33
-            JSR     SERWRITECHR     ; Echo character to remote console
->> f0c7:  bd f0 73
-            PULB                    ; Restore B
->> f0ca:  33
-            RTS                     ; Done
->> f0cb:  39
-
-
-*//////////////////////////////////////////
-*// Determine command specified by user  //
-*// OUT: A = command index number        //
-*//////////////////////////////////////////
-PARSECMDSTR PSHB                    ; Save B
->> f0cc:  37
-            PSHX                    ; Save X
->> f0cd:  3c
-            PSHY                    ; Save Y
->> f0ce:  18 3c
-            LDAB    #1              ; Initialize command array counter
->> f0d0:  c6 01
-            LDX     #INBUFF         ; Load pointer to input buffer string
->> f0d2:  ce d0 04
-            LDY     #COMMANDS       ; Load pointer to command array string
->> f0d5:  18 ce f4 04
-EXECLOOP    JSR     STRCMP          ; Compare command strings
->> f0d9:  bd f2 cd
-            CMPA    #0              ;
->> f0dc:  81 00
-            BEQ     FOUNDCMD        ; Found command (command number in B)
->> f0de:  27 11
-            INCB                    ; Increment command array counter
->> f0e0:  5c
-NEXTCMD     INY                     ;
->> f0e1:  18 08
-            LDAA    0,Y             ;
->> f0e3:  18 a6 00
-            BNE     NEXTCMD         ; Loop until next command
->> f0e6:  26 f9
-            INY                     ;
->> f0e8:  18 08
-            LDAA    0,Y             ;
->> f0ea:  18 a6 00
-            BEQ     BADCMD          ; End of command array and not found - done
->> f0ed:  27 06
-            BRA     EXECLOOP        ;
->> f0ef:  20 e8
-FOUNDCMD    PSHB                    ; Copy B -> A
->> f0f1:  37
-            PULA                    ;
->> f0f2:  32
-            BRA     PARSEDONE       ; 
->> f0f3:  20 08
-BADCMD      LDX     #UNKWNCMDSTR    ; Load invalid command string text
->> f0f5:  ce f4 8a
-            JSR     SERWRITESTR     ; Write message to serial port
->> f0f8:  bd f0 64
-            LDAA    #0              ; Bad command id
->> f0fb:  86 00
-PARSEDONE   PULY                    ; Restore Y
->> f0fd:  18 38
-            PULX                    ; Restore X
->> f0ff:  38
-            PULB                    ; Restore B
->> f100:  33
-            RTS                     ; Done - return to input handler loop
->> f101:  39
-
-
-*////////////////////////////////
-*// Dispatch to chosen command //
-*// IN: A = Command id         //
-*////////////////////////////////
-EXECUTECMD  PSHA                    ; Save A
->> f102:  36
-            PSHB                    ; Save B
->> f103:  37
-            PSHX                    ; Save X
->> f104:  3c
-            CMPA    #$1             ; #1: Srec
->> f105:  81 01
-            BEQ     CMD1            ;
->> f107:  27 24
-            CMPA    #$2             ; #2: Dump
->> f109:  81 02
-            BEQ     CMD2            ;
->> f10b:  27 25
-            CMPA    #$3             ; #3: Enter
->> f10d:  81 03
-            BEQ     CMD3            ;
->> f10f:  27 26
-            CMPA    #$4             ; #4: Go
->> f111:  81 04
-            BEQ     CMD4            ;
->> f113:  27 27
-            CMPA    #$5             ; #5: Execute
->> f115:  81 05
-            BEQ     CMD5            ;
->> f117:  27 28
-            CMPA    #$6             ; #6: ?
->> f119:  81 06
-            BEQ     CMD6            ;
->> f11b:  27 29
-            CMPA    #$7             ; #7: Help
->> f11d:  81 07
-            BEQ     CMD7            ;
->> f11f:  27 2d
-            CMPA    #$8             ; #8: BIOS routines list
->> f121:  81 08
-            BEQ     CMD8            ;
->> f123:  27 31
-            LDX     #UNKWNCMDSTR    ; Invalid command
->> f125:  ce f4 8a
-            JSR     SERWRITESTR     ;
->> f128:  bd f0 64
-            BRA     CMDDISPDONE     ;
->> f12b:  20 31
-CMD1        JSR     DOWNLD_SREC     ; Download & execute S-Record code
->> f12d:  bd f1 62
-            BRA     CMDDISPDONE     ;
->> f130:  20 2c
-CMD2        JSR     DUMPMEM         ; Dump memory contents
->> f132:  bd f2 67
-            BRA     CMDDISPDONE     ;
->> f135:  20 27
-CMD3        JSR     ENTERMEM        ; Enter memory contents
->> f137:  bd f1 f1
-            BRA     CMDDISPDONE     ;
->> f13a:  20 22
-CMD4        JSR     JUMPTO          ; Go
->> f13c:  bd f2 62
-            BRA     CMDDISPDONE     ;
->> f13f:  20 1d
-CMD5        JSR     WEEZER          ; Reset
->> f141:  bd f0 00
-            BRA     CMDDISPDONE     ;
->> f144:  20 18
-CMD6        LDX     #HELPTEXT       ; ?
->> f146:  ce f5 05
-            JSR     SERWRITESTR     ;
->> f149:  bd f0 64
-            BRA     CMDDISPDONE     ;
->> f14c:  20 10
-CMD7        LDX     #HELPTEXT       ; Help
->> f14e:  ce f5 05
-            JSR     SERWRITESTR     ;
->> f151:  bd f0 64
-            BRA     CMDDISPDONE     ;
->> f154:  20 08
-CMD8        LDX     #BIOSRTNSTXT    ; BIOS routines list
->> f156:  ce f6 0c
-            JSR     SERWRITESTR     ;
->> f159:  bd f0 64
-            BRA     CMDDISPDONE     ;
->> f15c:  20 00
-CMDDISPDONE PULX                    ; Restore X
->> f15e:  38
-            PULB                    ; Restore B
->> f15f:  33
-            PULA                    ; Restore A
->> f160:  32
-            RTS                     ; Done
->> f161:  39
-
-
-*////////////////////////////////
-*// S-Record receive & execute //
-*////////////////////////////////
-DOWNLD_SREC PSHA                    ; Save A
->> f162:  36
-            PSHB                    ; Save B
->> f163:  37
-            PSHX                    ; Save X
->> f164:  3c
-            PSHY                    ; Save Y
->> f165:  18 3c
-            LDX     #RECEIVESTR     ; Load receive string for display
->> f167:  ce f4 ad
-            JSR     SERWRITESTR     ; Write string to serial port
->> f16a:  bd f0 64
-            LDX     #DOWNLOADSTR    ; Load downloading string for display
->> f16d:  ce f4 db
-            JSR     LCD_CLEAR       ; Clear the LCD display
->> f170:  bd f2 fc
-            JSR     LCDWRITESTR     ; Write string to serial port
->> f173:  bd f3 69
-SREC_GETLN  JSR     CLRINSTRING     ; Clear input string buffer and length
->> f176:  bd f0 47
-            JSR     SERREADSTR      ; Get S-Record line
->> f179:  bd f0 80
-            LDX     #INBUFF         ; Load pointer to S-Record line
->> f17c:  ce d0 04
-            LDY     #SREC_S1HDR     ; Load pointer to S1 header string
->> f17f:  18 ce f3 fe
-            JSR     STRCMP          ; Compare command strings
->> f183:  bd f2 cd
-            CMPA    #0              ;
->> f186:  81 00
-            BEQ     FOUND_S1HDR     ; Found S1 header
->> f188:  27 16
-            LDY     #SREC_S9HDR     ; Load pointer to S9 header string
->> f18a:  18 ce f4 01
-            JSR     STRCMP          ; Compare command strings
->> f18e:  bd f2 cd
-            CMPA    #0              ;
->> f191:  81 00
-            BEQ     FOUND_S9HDR     ; Found S9 header
->> f193:  27 36
-            LDX     #SRECERRSTR     ; ERROR: unrecognized S-Record header
->> f195:  ce f4 f5
-            JSR     LCD_CLEAR       ; Clear the LCD display
->> f198:  bd f2 fc
-            JSR     LCDWRITESTR     ; Write string to serial port
->> f19b:  bd f3 69
-            BRA     SREC_DONE       ;
->> f19e:  20 4b
-FOUND_S1HDR LDAB    #SR_PAIROFST    ; Offset X to the character pair count
->> f1a0:  c6 02
-            ABX                     ;
->> f1a2:  3a
-            JSR     ASCII2HEX       ; Convert ASCII count to hex (result in A)
->> f1a3:  bd f2 32
-            SUBA    #$3             ; Reduce the count by 3 (addr & checksum)
->> f1a6:  80 03
-            INX                     ; Index to the address High field
->> f1a8:  08
-            INX                     ;
->> f1a9:  08
-            PSHA                    ; Save data byte count
->> f1aa:  36
-            JSR     ASCII2HEX       ; Convert ASCII addrH to hex (result in A)
->> f1ab:  bd f2 32
-            TAB                     ; A (addrH) -> B
->> f1ae:  16
-            INX                     ; Index to the address Low field
->> f1af:  08
-            INX                     ;
->> f1b0:  08
-            JSR     ASCII2HEX       ; Convert ASCII addrL to hex (result in A)
->> f1b1:  bd f2 32
-            PSHA                    ; Push AddrL onto stack
->> f1b4:  36
-            PSHB                    ; Push AddrH onto stack
->> f1b5:  37
-            PULY                    ; Pull AddrH & AddrL (16-bits) into Y
->> f1b6:  18 38
-            PULB                    ; Restore the data byte count (**into B**)
->> f1b8:  33
-            INX                     ; Index to the start of the S-Record data
->> f1b9:  08
-            INX                     ;
->> f1ba:  08
-STORE_SREC  JSR     ASCII2HEX       ; Convert ASCII byte to hex (result in A)
->> f1bb:  bd f2 32
-            STAA    0,Y             ; Store the converted byte value
->> f1be:  18 a7 00
-            INX                     ;
->> f1c1:  08
-            INX                     ;
->> f1c2:  08
-            INY                     ;
->> f1c3:  18 08
-            SUBB    #1              ; Decrement the byte count
->> f1c5:  c0 01
-            BNE     STORE_SREC      ; Continue until we're finished
->> f1c7:  26 f2
-*// NOTE: we're ignoring the checksum - may want to fix this in the future.
-            BRA     SREC_GETLN      ; Read next line
->> f1c9:  20 ab
-FOUND_S9HDR LDX     #JUMPINGSTR     ; Load jumping string for display
->> f1cb:  ce f4 ea
-            JSR     LCD_CLEAR       ; Clear the LCD display
->> f1ce:  bd f2 fc
-            JSR     LCDWRITESTR     ; Write string to serial port
->> f1d1:  bd f3 69
-            LDX     #INBUFF         ; Load pointer to S-Record line
->> f1d4:  ce d0 04
-            INX                     ; Index to the S-Record address field
->> f1d7:  08
-            INX                     ;
->> f1d8:  08
-            INX                     ;
->> f1d9:  08
-            INX                     ;
->> f1da:  08
-            JSR     ASCII2HEX       ; Convert ASCII addrH to hex (result in A)
->> f1db:  bd f2 32
-            TAB                     ; A (addrH) -> B
->> f1de:  16
-            INX                     ; Index to the address Low field
->> f1df:  08
-            INX                     ;
->> f1e0:  08
-            JSR     ASCII2HEX       ; Convert ASCII addrL to hex (result in A)
->> f1e1:  bd f2 32
-            PSHA                    ; Push AddrL onto stack
->> f1e4:  36
-            PSHB                    ; Push AddrH onto stack
->> f1e5:  37
-            PULY                    ; Pull AddrH & AddrL (16-bits) into Y
->> f1e6:  18 38
-            JSR     0,Y             ; Jump to the address in Y
->> f1e8:  18 ad 00
-SREC_DONE   PULY                    ; Restore Y
->> f1eb:  18 38
-            PULX                    ; Restore X
->> f1ed:  38
-            PULB                    ; Restore B
->> f1ee:  33
-            PULA                    ; Restore A
->> f1ef:  32
-            RTS                     ; Done
->> f1f0:  39
-
-*//////////////////////////////
-*// Enter memory             //
-*// IN:  LDY = input address //
-*//////////////////////////////
-*// TODO - this routine is unfinished
-ENTERMEM    PSHA                    ; Save A
->> f1f1:  36
-            PSHB                    ; Save B
->> f1f2:  37
-            PSHX                    ; Save X
->> f1f3:  3c
-            PSHY                    ; Save Y
->> f1f4:  18 3c
-            JSR     SERCLRINPUT     ; Clear SCI receive buffer
->> f1f6:  bd f0 38
-            LDX     #ENTERSTR       ; Display enter data string
->> f1f9:  ce f4 43
-            JSR     SERWRITESTR     ;
->> f1fc:  bd f0 64
-ENTERLOOP   JSR     CLRINSTRING     ; Clear input buffer and length
->> f1ff:  bd f0 47
-            JSR     SERREADSTR      ; Read serial string (i.e. byte text)
->> f202:  bd f0 80
-            JSR     SERPRTCR        ; Print CR to SCI
->> f205:  bd f2 b8
-            LDX     #INBUFF         ; Check for 0 (indicating done)
->> f208:  ce d0 04
-            LDAA    0,X             ;
->> f20b:  a6 00
-            BEQ     ENTERDONE       ;
->> f20d:  27 0a
-            JSR     ASCII2HEX       ; Convert ASCII byte to hex
->> f20f:  bd f2 32
-            STAA    0,Y             ; Store data byte
->> f212:  18 a7 00
-            ABY                     ;
->> f215:  18 3a
-            BRA     ENTERLOOP       ; Continue with input stream
->> f217:  20 e6
-ENTERDONE   PULY                    ; Restore Y
->> f219:  18 38
-            PULX                    ; Restore X
->> f21b:  38
-            PULB                    ; Restore B
->> f21c:  33
-            PULA                    ; Restore A
->> f21d:  32
-            RTS                     ; Done
->> f21e:  39
-
-
-*//////////////////////////////
-*// Get input buffer address //
-*//////////////////////////////
-INBUFFADDR  LDX     #INBUFF
->> f21f:  ce d0 04
-            RTS
->> f222:  39
-
-
-*//////////////////////////////
-*// Get input buffer address //
-*//////////////////////////////
-INBUFFLENADDR   LDX     #INBUFFLEN
->> f223:  ce d0 03
-                RTS
->> f226:  39
-
-
-*//////////////////////////////////
-*// Convert text to upper case   //
-*// IN: A = character to convert //
-*//////////////////////////////////
-UPCASE      CMPA    #'a'            ; If ASCII digit isn't a character, skip
->> f227:  81 61
-            BLO     UPCASEDONE      ;
->> f229:  25 06
-            CMPA    #'z'            ;
->> f22b:  81 7a
-            BHI     UPCASEDONE      ;
->> f22d:  22 02
-            SUBA    #$20            ; Convert lower case to upper case
->> f22f:  80 20
-UPCASEDONE  RTS                     ; Done
->> f231:  39
-
-
-*//////////////////////////////////////////
-*// Convert text to binary               //
-*// IN:  LDX = input string (two digits) //
-*// OUT: A   = converted byte value      //
-*//////////////////////////////////////////
-ASCII2HEX   PSHX                    ; Save X
->> f232:  3c
-            LDAA    0,X             ;
->> f233:  a6 00
-            JSR     UPCASE          ; If character, convert to uppercase
->> f235:  bd f2 27
-            CMPA    #$41            ; Is digit a character?
->> f238:  81 41
-            BLO     ISNUMBER        ; No - assume number
->> f23a:  25 04
-ISALPHA     SUBA    #$37            ; Convert character to hex value
->> f23c:  80 37
-            BRA     ASCII1          ;
->> f23e:  20 02
-ISNUMBER    SUBA    #$30            ; Convert number to hex value
->> f240:  80 30
-ASCII1      ANDA    #$0F            ; Mask upper nibble bits
->> f242:  84 0f
-            LSLA                    ; First digit is upper nibble - shift
->> f244:  48
-            LSLA                    ;
->> f245:  48
-            LSLA                    ;
->> f246:  48
-            LSLA                    ;
->> f247:  48
-            STAA    TEMP            ; Save number in temporary variable
->> f248:  b7 d0 00
-NEXTDIGIT   INX                     ; Move to second digit
->> f24b:  08
-            LDAA    0,X             ;
->> f24c:  a6 00
-            JSR     UPCASE          ; If character, convert to uppercase
->> f24e:  bd f2 27
-            CMPA    #$41            ; Is digit a character?
->> f251:  81 41
-            BLO     ISNUMBER2       ; No - assume number
->> f253:  25 04
-ISALPHA2    SUBA    #$37            ; Convert character to hex value
->> f255:  80 37
-            BRA     ASCII2          ;
->> f257:  20 02
-ISNUMBER2   SUBA    #$30            ; Convert number to hex value
->> f259:  80 30
-ASCII2      ANDA    #$0F            ; Mask upper nibble bits
->> f25b:  84 0f
-            ORAA    TEMP            ; Or in upper nibble bits
->> f25d:  ba d0 00
-            PULX                    ; Restore X
->> f260:  38
-            RTS                     ; Done
->> f261:  39
-
-*///////////////////////////////
-*// Jump to specified address //
-*// IN:  LDX = address        //
-*///////////////////////////////
-JUMPTO     PSHX                    ; Save X
->> f262:  3c
-           JSR     0,X             ; Jump to address stored in X
->> f263:  ad 00
-           PULX                    ; Restore X
->> f265:  38
-           RTS
->> f266:  39
-
-*//////////////////////////////
-*// Dump memory contents     //
-*// IN:  LDX = start address //
-*//////////////////////////////
-DUMPMEM     PSHA                    ; Save A
->> f267:  36
-            PSHB                    ; Save B
->> f268:  37
-            PSHX                    ; Save X
->> f269:  3c
-            PSHX                    ; Save X a second time
->> f26a:  3c
-            LDX     #DUMPSTR        ; Load dump text
->> f26b:  ce f4 2e
-            JSR     SERWRITESTR     ;
->> f26e:  bd f0 64
-            LDAA    #0              ; Zero counter
->> f271:  86 00
-            STAA    TEMP
->> f273:  b7 d0 00
-            PULX                    ; Restore X to start address
->> f276:  38
-; TODO
-            LDX     #$D100          ; For now, just dump from 0xD100...
->> f277:  ce d1 00
-DUMPMEM1    LDAA    #0
->> f27a:  86 00
-DUMPLOOP    LDAB    0,X             ; Load byte from receive buffer
->> f27c:  e6 00
-            JSR     SERPRTBYTE      ; Print byte in ascii to SCI
->> f27e:  bd f2 ad
-            JSR     SERPRTSPACE     ; Print space
->> f281:  bd f2 c5
-            INX                     ; Next byte
->> f284:  08
-            INCA                    ; Increment byte count
->> f285:  4c
-            CMPA    #$10
->> f286:  81 10
-            BNE     DUMPLOOP        ;
->> f288:  26 f2
-            JSR     SERPRTCR        ; Print CR to SCI
->> f28a:  bd f2 b8
-            ADDA    TEMP
->> f28d:  bb d0 00
-            STAA    TEMP
->> f290:  b7 d0 00
-            CMPA    #$A0
->> f293:  81 a0
-            BLO     DUMPMEM1
->> f295:  25 e3
-DUMPDONE    PULX                    ; Restore X
->> f297:  38
-            PULB                    ; Restore B
->> f298:  33
-            PULA                    ; Restore A
->> f299:  32
-            RTS                     ; Done
->> f29a:  39
-
-
-*/////////////////////////////////////////////
-*// Convert from binary to ASCII and output //
-*// IN: B = byte to convert                 //
-*/////////////////////////////////////////////
-OUTLHLF     LSRB                    ; Shift data to right
->> f29b:  54
-            LSRB
->> f29c:  54
-            LSRB
->> f29d:  54
-            LSRB
->> f29e:  54
-OUTRHLF     ANDB    #$0F            ; Mask top half
->> f29f:  c4 0f
-            ADDB    #$30            ; Convert to ascii
->> f2a1:  cb 30
-            CMPB    #$39
->> f2a3:  c1 39
-            BLE     OUTA            ; Jump if 0-9
->> f2a5:  2f 02
-            ADDB    #$07            ; Convert to hex A-F
->> f2a7:  cb 07
-OUTA        JSR     SERWRITECHR     ; Output character
->> f2a9:  bd f0 73
-            RTS
->> f2ac:  39
-
-
-*////////////////////////////////
-*// Print byte to serial port  //
-*// IN: B = byte to be printed //
-*////////////////////////////////
-SERPRTBYTE  PSHB
->> f2ad:  37
-            PSHB
->> f2ae:  37
-            JSR     OUTLHLF         ; Output left half
->> f2af:  bd f2 9b
-            PULB                    ; Retrieve copy
->> f2b2:  33
-            JSR     OUTRHLF         ; Output right half
->> f2b3:  bd f2 9f
-            PULB
->> f2b6:  33
-            RTS
->> f2b7:  39
-
-
-*//////////////////////////////////////////
-*// Print carriage return to serial port //
-*//////////////////////////////////////////
-SERPRTCR    PSHB
->> f2b8:  37
-            LDAB    #CR
->> f2b9:  c6 0d
-            JSR     SERWRITECHR
->> f2bb:  bd f0 73
-            LDAB    #LF
->> f2be:  c6 0a
-            JSR     SERWRITECHR
->> f2c0:  bd f0 73
-            PULB
->> f2c3:  33
-            RTS
->> f2c4:  39
-
-
-*////////////////////////////////
-*// Print space to serial port //
-*////////////////////////////////
-SERPRTSPACE PSHB
->> f2c5:  37
-            LDAB    #SPACE
->> f2c6:  c6 20
-            JSR     SERWRITECHR
->> f2c8:  bd f0 73
-            PULB
->> f2cb:  33
-            RTS
->> f2cc:  39
-
-
-*///////////////////////////////////////////////////////
-*// String compare routine                            //
-*//                                                   //
-*// IN: X = Pointer to string #1                      //
-*// IN: Y = Pointer to string #2                      //
-*// OUT: A = compare status (0 = match, 1 = NO match) //
-*///////////////////////////////////////////////////////
-STRCMP      PSHB                    ; Save B
->> f2cd:  37
-            PSHX                    ; Save X
->> f2ce:  3c
-            PSHY                    ; Save Y
->> f2cf:  18 3c
-            LDAB    #0
->> f2d1:  c6 00
-SCMPLOOP    LDAA    0,X             ; Load character from first string
->> f2d3:  a6 00
-            CMPA    #0              ; NULL?
->> f2d5:  81 00
-            BEQ     SCMPLPDONE      ;
->> f2d7:  27 0b
-            CMPA    0,Y             ; Compare characters
->> f2d9:  18 a1 00
-            BNE     SCMPLPDONE      ; No match
->> f2dc:  26 06
-            INCB                    ;
->> f2de:  5c
-            INX                     ; Next character
->> f2df:  08
-            INY                     ; 
->> f2e0:  18 08
-            BRA     SCMPLOOP        ; Check next character
->> f2e2:  20 ef
-SCMPLPDONE  LDAA    0,X             ; If end of string - consider it a match
->> f2e4:  a6 00
-            BEQ     SCMPMATCH       ;
->> f2e6:  27 09
-            LDAA    0,Y             ;
->> f2e8:  18 a6 00
-            BEQ     SCMPMATCH       ;
->> f2eb:  27 04
-SCMPNOMATCH LDAA    #1              ; No match
->> f2ed:  86 01
-            BRA     SCMPDONE        ;
->> f2ef:  20 06
-SCMPMATCH   CMPB    #0              ;
->> f2f1:  c1 00
-            BEQ     SCMPNOMATCH     ;
->> f2f3:  27 f8
-            LDAA    #0              ;
->> f2f5:  86 00
-SCMPDONE    PULY                    ; Restore Y
->> f2f7:  18 38
-            PULX                    ; Restore X
->> f2f9:  38
-            PULB                    ; Restore X
->> f2fa:  33
-            RTS                     ; Done
->> f2fb:  39
-
-
-*//////////////////////
-*/ Clear LCD display //
-*//////////////////////
-LCD_CLEAR   PSHA                    ; Save A
->> f2fc:  36
-            LDAA    #$1             ; Clear all display and return cursor home
->> f2fd:  86 01
-            STAA    DISPC           ;
->> f2ff:  b7 c0 00
-            JSR     LCD_WAIT        ;
->> f302:  bd f3 8c
-            PULA                    ; Restore A
->> f305:  32
-            RTS                     ; Done
->> f306:  39
-
-*///////////////////////////////////////////////////////
-*// Simple ms delay routine                           //
-*//                                                   //
-*// IN: A = Number of ms to delay (1-255)             //
-*//                                                   //
-*// NOTE: *** Assumes E=2MHz ***                      //
-*///////////////////////////////////////////////////////
-DELAY_MS    PSHX
->> f307:  3c
-            LDX     #328
->> f308:  ce 01 48
-            BRA     _DELAY_MS_1
->> f30b:  20 03
-_DELAY_MS_0
-            LDX     #332            ; 332*6 = 1992 cycles
->> f30d:  ce 01 4c
-_DELAY_MS_1
-            DEX
->> f310:  09
-            BNE     _DELAY_MS_1
->> f311:  26 fd
-            DECA
->> f313:  4a
-            BNE     _DELAY_MS_0
->> f314:  26 f7
-            PULX
->> f316:  38
-            RTS
->> f317:  39
-
-*///////////////////////////////////////////////////////
-*// Initialize LCD display                            //
-*//                                                   //
-*// NOTE: The following sequence was taken from the   //
-*//       Optrex LCD manual.                          //
-*///////////////////////////////////////////////////////
-LCD_INIT    PSHA                    ; Save A
->> f318:  36
-            LDAA    #15             ; Wait 15ms to give Vcc time to stabilize
->> f319:  86 0f
-            JSR     DELAY_MS        ;
->> f31b:  bd f3 07
-            LDAA    #$38            ; Interface len=8, 2 lines, 5x7 font
->> f31e:  86 38
-            STAA    DISPC           ;
->> f320:  b7 c0 00
-            LDAA    #5              ; Wait 5ms
->> f323:  86 05
-            JSR     DELAY_MS        ;
->> f325:  bd f3 07
-            LDAA    #$38            ; REPEAT: Interface len=8, 2 lines, 5x7 font
->> f328:  86 38
-            STAA    DISPC           ;
->> f32a:  b7 c0 00
-            LDAA    #1              ; Wait 1ms
->> f32d:  86 01
-            JSR     DELAY_MS        ;
->> f32f:  bd f3 07
-            LDAA    #$38            ; REPEAT: Interface len=8, 2 lines, 5x7 font
->> f332:  86 38
-            STAA    DISPC           ;
->> f334:  b7 c0 00
-            JSR     LCD_WAIT        ; Busy Flag can now be checked
->> f337:  bd f3 8c
-            LDAA    #$38            ; Interface len=8, 2 lines, 5x7 font
->> f33a:  86 38
-            STAA    DISPC           ;
->> f33c:  b7 c0 00
-            JSR     LCD_WAIT        ;
->> f33f:  bd f3 8c
-            LDAA    #$C             ; Display on, cursor off, cursor blink off
->> f342:  86 0c
-            STAA    DISPC           ;
->> f344:  b7 c0 00
-            JSR     LCD_WAIT        ;
->> f347:  bd f3 8c
-            LDAA    #$1             ; Clear all display and return cursor home
->> f34a:  86 01
-            STAA    DISPC           ;
->> f34c:  b7 c0 00
-            LDAA    #2              ; Wait 2ms
->> f34f:  86 02
-            JSR     DELAY_MS        ;
->> f351:  bd f3 07
-            JSR     LCD_WAIT        ;
->> f354:  bd f3 8c
-            LDAA    #$6             ; Increment cursor and don't shift display
->> f357:  86 06
-            STAA    DISPC           ;
->> f359:  b7 c0 00
-            JSR     LCD_WAIT        ;
->> f35c:  bd f3 8c
-            LDAA    #$80            ; Set DDRAM address to position 0.
->> f35f:  86 80
-            STAA    DISPC           ;
->> f361:  b7 c0 00
-            JSR     LCD_WAIT        ;
->> f364:  bd f3 8c
-            PULA                    ; Restore A
->> f367:  32
-            RTS                     ; Done
->> f368:  39
-
-
-*//////////////////////
-*// Write LCD string //
-*//////////////////////
-LCDWRITESTR PSHX                    ; Save X
->> f369:  3c
-            PSHB                    ; Save B
->> f36a:  37
-LCDSTRLOOP  LDAB    0,X             ; Get next character to be written
->> f36b:  e6 00
-            BEQ     LCDSTRDONE      ; If NULL terminator, done
->> f36d:  27 06
-            JSR     LCDWRITECHR     ; Write character to SCI
->> f36f:  bd f3 78
-            INX                     ; Next character
->> f372:  08
-            BRA     LCDSTRLOOP      ; Continue
->> f373:  20 f6
-LCDSTRDONE  PULB                    ; Restore B
->> f375:  33
-            PULX                    ; Restore X
->> f376:  38
-            RTS                     ; Done
->> f377:  39
-
-
-*/////////////////////////
-*// Write LCD character //
-*/////////////////////////
-LCDWRITECHR PSHB                    ; Save B
->> f378:  37
-            CMPB    #CR             ; Don't do CRs
->> f379:  c1 0d
-            BEQ     LCDWRTDONE      ;
->> f37b:  27 0d
-            CMPB    #LF             ; Don't do LFs
->> f37d:  c1 0a
-            BEQ     LCDWRTDONE      ;
->> f37f:  27 09
-            JSR     LCD_WAIT        ; Make sure LCD isn't doing anything
->> f381:  bd f3 8c
-            STAB    DISPD           ; Write character to display
->> f384:  f7 c0 01
-            JSR     LCD_WAIT        ;
->> f387:  bd f3 8c
-LCDWRTDONE  PULB                    ; Restore B
->> f38a:  33
-            RTS                     ; Done
->> f38b:  39
-
-
-*///////////////////
-*// LCD wait loop //
-*///////////////////
-LCD_WAIT    PSHA                    ; Save A
->> f38c:  36
-LCDWTLOOP   LDAA    DISPC           ; Wait for LCD to swallow last request
->> f38d:  b6 c0 00
-            ANDA    #$80            ;
->> f390:  84 80
-            BNE     LCDWTLOOP       ; Not ready to take new data
->> f392:  26 f9
-            PULA                    ; Restore A
->> f394:  32
-            RTS                     ; Done
->> f395:  39
-
-
-*/////////////////////////////////////////
-*// SWI handler                         //
-*// IN: A = command id to be executed   //
-*/////////////////////////////////////////
-SWIHDLR     PSHA                    ; Save A
->> f396:  36
-            PSHB                    ; Save B
->> f397:  37
-            PSHX                    ; Save X
->> f398:  3c
-            PSHY                    ; Save Y
->> f399:  18 3c
-            LDX     #BIOSCMDTBL     ; Load BIOS command table base
->> f39b:  ce f7 77
-            PSHA                    ; Copy A -> B
->> f39e:  36
-            PULB                    ;
->> f39f:  33
-            LSLB                    ; Each offset is 2 bytes (multiply by 2)
->> f3a0:  58
-            ABX                     ; Add B to X
->> f3a1:  3a
-            LDY     0,X             ; Get routine address
->> f3a2:  1a ee 00
-            STY     BIOSRTN         ; Store routine address
->> f3a5:  18 ff d0 01
-            PULY                    ; Restore Y
->> f3a9:  18 38
-            PULX                    ; Restore X
->> f3ab:  38
-            PULB                    ; Restore B
->> f3ac:  33
-            PULA                    ; Restore A
->> f3ad:  32
-            JSR     BIOSRTN         ; Call BIOS routine
->> f3ae:  bd d0 01
-            RTI                     ; Done
->> f3b1:  3b
-
-
-*////////////////////
-*//  Text strings  //
-*////////////////////
-
-*// Welcome string
-WELCOMESTR  FCB CR
->> f3b2:  0d
-            FCB LF
->> f3b3:  0a
-            FCC "68MICRO Ver 0.3"
->> f3b4:  36 38 4d 49 43 52 4f 20 56 65 72 20 30 2e 33 
-            FCB CR
->> f3c3:  0d
-            FCB LF
->> f3c4:  0a
-            FCB 0
->> f3c5:  00
-*// Copyright string
-COPYRGHTSTR FCC "Copyright (c) 2011, Jeff Glaum.  All rights reserved."
->> f3c6:  43 6f 70 79 72 69 67 68 74 20 28 63 29 20 32 30 31 31 2c 20 4a 65 66 66 20 47 6c 61 75 6d 2e 20 20 41 6c 6c 20 72 69 67 68 74 73 20 72 65 73 65 72 76 65 64 2e 
-            FCB CR
->> f3fb:  0d
-            FCB LF
->> f3fc:  0a
-            FCB 0
->> f3fd:  00
-
-SREC_S1HDR  FCC "S1"
->> f3fe:  53 31 
-            FCB 0
->> f400:  00
-
-SREC_S9HDR  FCC "S9"
->> f401:  53 39 
-            FCB 0
->> f403:  00
-
-*// User commands
-COMMANDS    FCC "srec"
->> f404:  73 72 65 63 
-            FCB 0
->> f408:  00
-            FCC "dump"
->> f409:  64 75 6d 70 
-            FCB 0
->> f40d:  00
-            FCC "enter"
->> f40e:  65 6e 74 65 72 
-            FCB 0    
->> f413:  00
-            FCC "go"
->> f414:  67 6f 
-            FCB 0    
->> f416:  00
-            FCC "reset"
->> f417:  72 65 73 65 74 
-            FCB 0    
->> f41c:  00
-            FCC "?"
->> f41d:  3f 
-            FCB 0    
->> f41e:  00
-            FCC "help"
->> f41f:  68 65 6c 70 
-            FCB 0    
->> f423:  00
-            FCC "biosrtns"
->> f424:  62 69 6f 73 72 74 6e 73 
-            FCB 0                   ; Must end in two NULLs
->> f42c:  00
-            FCB 0
->> f42d:  00
-
-DUMPSTR     FCB CR
->> f42e:  0d
-            FCB LF
->> f42f:  0a
-            FCC "Memory contents:"
->> f430:  4d 65 6d 6f 72 79 20 63 6f 6e 74 65 6e 74 73 3a 
-            FCB CR
->> f440:  0d
-            FCB LF
->> f441:  0a
-            FCB 0
->> f442:  00
-
-ENTERSTR    FCB CR
->> f443:  0d
-            FCB LF
->> f444:  0a
-            FCC "Enter each byte followed by return.  To finish press return twice."
->> f445:  45 6e 74 65 72 20 65 61 63 68 20 62 79 74 65 20 66 6f 6c 6c 6f 77 65 64 20 62 79 20 72 65 74 75 72 6e 2e 20 20 54 6f 20 66 69 6e 69 73 68 20 70 72 65 73 73 20 72 65 74 75 72 6e 20 74 77 69 63 65 2e 
-            FCB CR
->> f487:  0d
-            FCB LF
->> f488:  0a
-            FCB 0
->> f489:  00
-
-*// Resonse strings
-UNKWNCMDSTR FCB CR
->> f48a:  0d
-            FCB LF
->> f48b:  0a
-            FCC "Invalid command"
->> f48c:  49 6e 76 61 6c 69 64 20 63 6f 6d 6d 61 6e 64 
-            FCB CR
->> f49b:  0d
-            FCB LF
->> f49c:  0a
-            FCB 0
->> f49d:  00
-
-*// Resonse string
-PROMPTSTR   FCC "> "
->> f49e:  3e 20 
-            FCB 0
->> f4a0:  00
-         
-*// Echo string
-ECHOSTR     FCC "You typed: "
->> f4a1:  59 6f 75 20 74 79 70 65 64 3a 20 
-            FCB 0
->> f4ac:  00
- 
-*// Ready to receive string
-RECEIVESTR  FCB CR
->> f4ad:  0d
-            FCB LF
->> f4ae:  0a
-            FCC "Ready to receive S-Record data from host..."
->> f4af:  52 65 61 64 79 20 74 6f 20 72 65 63 65 69 76 65 20 53 2d 52 65 63 6f 72 64 20 64 61 74 61 20 66 72 6f 6d 20 68 6f 73 74 2e 2e 2e 
-            FCB 0
->> f4da:  00
-
-DOWNLOADSTR FCC "Downloading..."
->> f4db:  44 6f 77 6e 6c 6f 61 64 69 6e 67 2e 2e 2e 
-            FCB 0
->> f4e9:  00
-
-JUMPINGSTR  FCC "Jumping..."
->> f4ea:  4a 75 6d 70 69 6e 67 2e 2e 2e 
-            FCB 0
->> f4f4:  00
-
-SRECERRSTR  FCC "S-Record Error!"
->> f4f5:  53 2d 52 65 63 6f 72 64 20 45 72 72 6f 72 21 
-            FCB 0
->> f504:  00
-
-*// Help text
-HELPTEXT    FCB CR
->> f505:  0d
-            FCB LF
->> f506:  0a
-            FCC "Commands:"
->> f507:  43 6f 6d 6d 61 6e 64 73 3a 
-            FCB CR
->> f510:  0d
-            FCB LF
->> f511:  0a
-            FCC "srec     - Weezer receives & executes S-Record code""
->> f512:  73 72 65 63 20 20 20 20 20 2d 20 57 65 65 7a 65 72 20 72 65 63 65 69 76 65 73 20 26 20 65 78 65 63 75 74 65 73 20 53 2d 52 65 63 6f 72 64 20 63 6f 64 65 
-            FCB CR
->> f545:  0d
-            FCB LF
->> f546:  0a
-            FCC "dump     - dumps contents of receive buffer"
->> f547:  64 75 6d 70 20 20 20 20 20 2d 20 64 75 6d 70 73 20 63 6f 6e 74 65 6e 74 73 20 6f 66 20 72 65 63 65 69 76 65 20 62 75 66 66 65 72 
-            FCB CR
->> f572:  0d
-            FCB LF
->> f573:  0a
-            FCC "enter    - enters contents of receive buffer"
->> f574:  65 6e 74 65 72 20 20 20 20 2d 20 65 6e 74 65 72 73 20 63 6f 6e 74 65 6e 74 73 20 6f 66 20 72 65 63 65 69 76 65 20 62 75 66 66 65 72 
-            FCB CR
->> f5a0:  0d
-            FCB LF
->> f5a1:  0a
-            FCC "go       - executes contents of receive buffer"
->> f5a2:  67 6f 20 20 20 20 20 20 20 2d 20 65 78 65 63 75 74 65 73 20 63 6f 6e 74 65 6e 74 73 20 6f 66 20 72 65 63 65 69 76 65 20 62 75 66 66 65 72 
-            FCB CR
->> f5d0:  0d
-            FCB LF
->> f5d1:  0a
-            FCC "reset    - resets system"
->> f5d2:  72 65 73 65 74 20 20 20 20 2d 20 72 65 73 65 74 73 20 73 79 73 74 65 6d 
-            FCB CR
->> f5ea:  0d
-            FCB LF
->> f5eb:  0a
-            FCC "?/help   - displays this text"
->> f5ec:  3f 2f 68 65 6c 70 20 20 20 2d 20 64 69 73 70 6c 61 79 73 20 74 68 69 73 20 74 65 78 74 
-            FCB CR
->> f609:  0d
-            FCB LF
->> f60a:  0a
-            FCB 0
->> f60b:  00
-
-BIOSRTNSTXT FCB CR
->> f60c:  0d
-            FCB LF
->> f60d:  0a
-            FCC "1: SERCLRINPUT"
->> f60e:  31 3a 20 53 45 52 43 4c 52 49 4e 50 55 54 
-            FCB CR
->> f61c:  0d
-            FCB LF
->> f61d:  0a
-            FCC "2: CLRINSTRING"
->> f61e:  32 3a 20 43 4c 52 49 4e 53 54 52 49 4e 47 
-            FCB CR
->> f62c:  0d
-            FCB LF
->> f62d:  0a
-            FCC "3: SERIAL_INIT"
->> f62e:  33 3a 20 53 45 52 49 41 4c 5f 49 4e 49 54 
-            FCB CR
->> f63c:  0d
-            FCB LF
->> f63d:  0a
-            FCC "4: SERWRITESTR"
->> f63e:  34 3a 20 53 45 52 57 52 49 54 45 53 54 52 
-            FCB CR
->> f64c:  0d
-            FCB LF
->> f64d:  0a
-            FCC "5: SERWRITECHR"
->> f64e:  35 3a 20 53 45 52 57 52 49 54 45 43 48 52 
-            FCB CR
->> f65c:  0d
-            FCB LF
->> f65d:  0a
-            FCC "6: SERREADSTR"
->> f65e:  36 3a 20 53 45 52 52 45 41 44 53 54 52 
-            FCB CR
->> f66b:  0d
-            FCB LF
->> f66c:  0a
-            FCC "7: SERREADCHR"
->> f66d:  37 3a 20 53 45 52 52 45 41 44 43 48 52 
-            FCB CR
->> f67a:  0d
-            FCB LF
->> f67b:  0a
-            FCC "8: PARSECMDSTR"
->> f67c:  38 3a 20 50 41 52 53 45 43 4d 44 53 54 52 
-            FCB CR
->> f68a:  0d
-            FCB LF
->> f68b:  0a
-            FCC "9: EXECUTECMD"
->> f68c:  39 3a 20 45 58 45 43 55 54 45 43 4d 44 
-            FCB CR
->> f699:  0d
-            FCB LF
->> f69a:  0a
-            FCC "A: ENTERMEM"
->> f69b:  41 3a 20 45 4e 54 45 52 4d 45 4d 
-            FCB CR
->> f6a6:  0d
-            FCB LF
->> f6a7:  0a
-            FCC "B: UPCASE"
->> f6a8:  42 3a 20 55 50 43 41 53 45 
-            FCB CR
->> f6b1:  0d
-            FCB LF
->> f6b2:  0a
-            FCC "C: ASCII2HEX"
->> f6b3:  43 3a 20 41 53 43 49 49 32 48 45 58 
-            FCB CR
->> f6bf:  0d
-            FCB LF
->> f6c0:  0a
-            FCC "D: DUMPMEM"
->> f6c1:  44 3a 20 44 55 4d 50 4d 45 4d 
-            FCB CR
->> f6cb:  0d
-            FCB LF
->> f6cc:  0a
-            FCC "E: SERPRTBYTE"
->> f6cd:  45 3a 20 53 45 52 50 52 54 42 59 54 45 
-            FCB CR
->> f6da:  0d
-            FCB LF
->> f6db:  0a
-            FCC "F: SERPRTCR"
->> f6dc:  46 3a 20 53 45 52 50 52 54 43 52 
-            FCB CR
->> f6e7:  0d
-            FCB LF
->> f6e8:  0a
-            FCC "10: SERPRTSPACE"
->> f6e9:  31 30 3a 20 53 45 52 50 52 54 53 50 41 43 45 
-            FCB CR
->> f6f8:  0d
-            FCB LF
->> f6f9:  0a
-            FCC "11: STRCMP"
->> f6fa:  31 31 3a 20 53 54 52 43 4d 50 
-            FCB CR
->> f704:  0d
-            FCB LF
->> f705:  0a
-            FCC "12: LCD_INIT"
->> f706:  31 32 3a 20 4c 43 44 5f 49 4e 49 54 
-            FCB CR
->> f712:  0d
-            FCB LF
->> f713:  0a
-            FCC "13: LCD_CLEAR"
->> f714:  31 33 3a 20 4c 43 44 5f 43 4c 45 41 52 
-            FCB CR
->> f721:  0d
-            FCB LF
->> f722:  0a
-            FCC "14: LCDWRITESTR"
->> f723:  31 34 3a 20 4c 43 44 57 52 49 54 45 53 54 52 
-            FCB CR
->> f732:  0d
-            FCB LF
->> f733:  0a
-            FCC "15: LCDWRITECHR"
->> f734:  31 35 3a 20 4c 43 44 57 52 49 54 45 43 48 52 
-            FCB CR
->> f743:  0d
-            FCB LF
->> f744:  0a
-            FCC "16: LCD_WAIT"
->> f745:  31 36 3a 20 4c 43 44 5f 57 41 49 54 
-            FCB CR
->> f751:  0d
-            FCB LF
->> f752:  0a
-            FCC "17: INBUFFADDR"
->> f753:  31 37 3a 20 49 4e 42 55 46 46 41 44 44 52 
-            FCB CR
->> f761:  0d
-            FCB LF
->> f762:  0a
-            FCC "18: INBUFFLENADDR"
->> f763:  31 38 3a 20 49 4e 42 55 46 46 4c 45 4e 41 44 44 52 
-            FCB CR
->> f774:  0d
-            FCB LF
->> f775:  0a
-            FCB 0
->> f776:  00
-
-*// Command table
-BIOSCMDTBL  EQU *
-            FDB 0000            ; 0
->> f777:  0000
-            FDB SERCLRINPUT     ; 1
->> f779:  f038
-            FDB CLRINSTRING     ; 2
->> f77b:  f047
-            FDB SERIAL_INIT     ; 3
->> f77d:  f052
-            FDB SERWRITESTR     ; 4
->> f77f:  f064
-            FDB SERWRITECHR     ; 5
->> f781:  f073
-            FDB SERREADSTR      ; 6
->> f783:  f080
-            FDB SERREADCHR      ; 7
->> f785:  f0ba
-            FDB PARSECMDSTR     ; 8
->> f787:  f0cc
-            FDB EXECUTECMD      ; 9
->> f789:  f102
-            FDB ENTERMEM        ; A
->> f78b:  f1f1
-            FDB UPCASE          ; B
->> f78d:  f227
-            FDB ASCII2HEX       ; C
->> f78f:  f232
-            FDB DUMPMEM         ; D
->> f791:  f267
-            FDB SERPRTBYTE      ; E
->> f793:  f2ad
-            FDB SERPRTCR        ; F
->> f795:  f2b8
-            FDB SERPRTSPACE     ; 10
->> f797:  f2c5
-            FDB STRCMP          ; 11
->> f799:  f2cd
-            FDB LCD_INIT        ; 12
->> f79b:  f318
-            FDB LCD_CLEAR       ; 13
->> f79d:  f2fc
-            FDB LCDWRITESTR     ; 14
->> f79f:  f369
-            FDB LCDWRITECHR     ; 15
->> f7a1:  f378
-            FDB LCD_WAIT        ; 16
->> f7a3:  f38c
-            FDB INBUFFADDR      ; 17
->> f7a5:  f21f
-            FDB INBUFFLENADDR   ; 18
->> f7a7:  f223
-
-*///////////////////////
-*// Interrupt vectors //
-*///////////////////////
-            ORG $FFF6           ; SWI Vector
-SWI_VECT    FDB SWIHDLR 
->> fff6:  f396
-
-            ORG $FFFE           ; Reset vector
-RESET_VECT  FDB WEEZER
->> fffe:  f000
+0001 ;;
+0002 ;;  Motorola MC68HC11 SBC Monitor Program ("Weezer")
+0003 ;;  Jeff Glaum
+0004 ;;
+0005 ;;  Revision	Date		Comment
+0006 ;;  ------------------------------------------------------------------
+0007 ;;  0.4		2012-Mar-10	Clean-up & bug fixes
+0008 ;;  0.5		2012-Mar-18	Added suppport for dump, enter, regs
+0009 ;;                        (tested on MC68HC11 simulator)
+0010 ;;
+0011 ;;
+0012 ;;   Memory Map:
+0013 ;;
+0014 ;;	$0000	+---------------+
+0015 ;;          |  256 bytes	|
+0016 ;;          |  on-chip RAM	| <- Stack (lower) & Monitor variables (upper)
+0017 ;;	$00FF	+---------------+
+0018 ;;          |               |
+0019 ;;          |    Unused     |
+0020 ;;	$1000	+---------------+
+0021 ;;          |   96 bytes	|
+0022 ;;          |   registers	|
+0023 ;;	$105F	+---------------+
+0024 ;;          |               |
+0025 ;;          |               |
+0026 ;;          |               |
+0027 ;;          |    Unused     |
+0028 ;;          |               |
+0029 ;;  $C000   +---------------+
+0030 ;;          | LCD registers |
+0031 ;;          +---------------+
+0032 ;;          |               |
+0033 ;;          |               |
+0034 ;;	$D000	+---------------+
+0035 ;;          |               |
+0036 ;;          |  8192 bytes	|
+0037 ;;          | off-chip RAM	| <- Free program memory
+0038 ;;          |               |
+0039 ;;          |               |
+0040 ;;	$F000	+---------------+
+0041 ;;          |               |
+0042 ;;          |  4096 bytes	|
+0043 ;;          | off-chip ROM	| <- Boot code and interrupt vectors
+0044 ;;          |               |
+0045 ;;          |               |
+0046 ;;	$FFFF	+---------------+
+0047 ;;
+0048 
+0049 
+0050 ;; Program Addresses
+0051 ;;
+0052 STACK_BASE  EQU     $80     ; Stack pointer base
+0053 PROGRAM_RAM EQU     $D000   ; Start of program RAM (free memory)
+0054 
+0055 ;; Serial UART Registers
+0056 ;;
+0057 BAUD        EQU     $102B   ; SCI BAUD register
+0058 SCCR1       EQU     $102C   ; SCI control register #1
+0059 SCCR2       EQU     $102D   ; SCI control register #2
+0060 SCSR        EQU     $102E   ; SCI control status register
+0061 SCDR        EQU     $102F   ; SCI data register
+0062 
+0063 ;; SCI Constants
+0064 ;;
+0065 BAUD_RATE   EQU     $30     ; 9600 baud
+0066 SCCR2_VAL   EQU     $0C     ; SCCR2 value
+0067 TDRE        EQU     $80     ; Transmit data register empty
+0068 
+0069 ;; ASCII Constants
+0070 ;;
+0071 SPACE       EQU     32      ; Space
+0072 CR          EQU     13      ; CR
+0073 LF          EQU     10      ; LF
+0074 DEL         EQU     127     ; DEL
+0075 BS          EQU     8       ; BS
+0076 BELL        EQU     7       ; BELL
+0077 
+0078 ;; LCD Registers
+0079 ;;
+0080 DISPC       EQU     $C000   ; LCD control register
+0081 DISPD       EQU     $C001   ; LCD data register
+0082 
+0083 ;; LCD Constants
+0084 ;;
+0085 LCD_CONFIG  EQU     $38     ; Interface len=8, 2 lines, 5x7 font
+0086 LCD_DISPON  EQU     $C      ; Display on, cursor off, cursor blink off
+0087 LCD_HOME    EQU     $1      ; Clear all display and return cursor home
+0088 LCD_CRSCFG  EQU     $6      ; Increment cursor and don't shift display
+0089 LCD_RAMADDR EQU     $80     ; Set DDRAM address to position 0.
+0090 LCD_WAITFLG EQU     $80     ; LCD command complete wait flag
+0091 
+0092 ;; S-Record Constants
+0093 ;;
+0094 SRECHDR_S1  EQU     1       ; S1 (data) record
+0095 SRECHDR_S9  EQU     2       ; S9 (jump address) record
+0096 
+0097 
+0098 ;; Memory Variables 
+0099 ;;
+0100             ORG     $90
+0101 INBUFF      RMB     $50     ; CLI Input buffer
+0102 INBUFFLEN   RMB     $1      ; CLI Input buffer length
+0103 TEMP        RMB     $1      ; Temporary variable
+0104 SRECADDR    RMB     $2      ; Current line's S-Record address
+0105 
+0106 
+0107 ;; Main routine
+0108 ;;
+0109             ORG     $F000           ; Locate program at $F000
+0110 WEEZER      LDS     #STACK_BASE     ; Locate stack pointer
+f000 8e 00 80 WEEZER
+0111             JSR     SERINIT         ; Initialize SCI port
+f003 bd f0 4c             JSR
+0112             JSR     LCDINIT         ; Initialize LCD display
+f006 bd f4 15             JSR
+0113             LDX     #WELCOMESTR     ; Display welcome string
+f009 ce f4 a3             LDX
+0114             JSR     SERWRITES       ;  * serial port
+f00c bd f0 5e             JSR
+0115             JSR     LCDWRITES       ;  * LCD
+f00f bd f4 66             JSR
+0116             LDX     #COPYRGHTSTR    ; Display copyright string
+f012 ce f4 b7             LDX
+0117             JSR     SERWRITES       ;  * serial port
+f015 bd f0 5e             JSR
+0118             JSR     SERCLEAR        ; Clear SCI input register
+f018 bd f0 34             JSR
+0119             CLI                     ; Enable interrupts
+f01b 0e             CLI
+0120 _PROMPT     LDX     #PROMPTSTR      ; Display input prompt
+f01c ce f5 b8 _PROMPT
+0121             JSR     SERWRITES       ;  * serial port
+f01f bd f0 5e             JSR
+0122             JSR     CLEARINPUT      ; Clear input string buffer and length
+f022 bd f0 43             JSR
+0123             JSR     SERREADS        ; Get user's input
+f025 bd f0 7a             JSR
+0124             JSR     PARSECMDS       ; Determine command specified
+f028 bd f0 f0             JSR
+0125             CMPA    #0              ; If command not found - don't execute
+f02b 81 00             CMPA
+0126             BEQ     _PROMPT         ;
+f02d 27 ed             BEQ
+0127             JSR     EXECUTECMD      ; Execute command
+f02f bd f1 2f             JSR
+0128             BRA     _PROMPT         ;
+f032 20 e8             BRA
+0129 
+0130 
+0131 ;; Read SCI receive buffer until empty 
+0132 ;;
+0133 SERCLEAR    PSHA
+f034 36 SERCLEAR
+0134 _SERCLR1    LDAA    SCSR
+f035 b6 10 2e _SERCLR1
+0135             ANDA    #$20
+f038 84 20             ANDA
+0136             BEQ     _SERCLRDONE
+f03a 27 05             BEQ
+0137             LDAA    SCDR
+f03c b6 10 2f             LDAA
+0138             BRA     _SERCLR1
+f03f 20 f4             BRA
+0139 _SERCLRDONE PULA
+f041 32 _SERCLRDONE
+0140             RTS
+f042 39             RTS
+0141 0142 0143 ;; Clear command input string 
+0144 ;;
+0145 CLEARINPUT  PSHA                    ; Save A
+f043 36 CLEARINPUT
+0146             LDAA    #0              ;
+f044 86 00             LDAA
+0147             STAA    INBUFF          ; Clear (terminate) input buffer
+f046 97 90             STAA
+0148             STAA    INBUFFLEN       ; Zero input buffer length
+f048 97 e0             STAA
+0149             PULA                    ; Restore A
+f04a 32             PULA
+0150             RTS
+f04b 39             RTS
+0151 
+0152 
+0153 ;; Initialize serial port 
+0154 ;;
+0155 SERINIT     PSHA                    ; Save A
+f04c 36 SERINIT
+0156             LDAA    #BAUD_RATE      ; Set baud rate to 9600 (8 MHz xtal)
+f04d 86 30             LDAA
+0157             STAA    BAUD            ;
+f04f b7 10 2b             STAA
+0158             LDAA    #0              ; Clear SCCR1 (1 start, 8 data, 1 stop)
+f052 86 00             LDAA
+0159             STAA    SCCR1           ;
+f054 b7 10 2c             STAA
+0160             LDAA    #SCCR2_VAL      ; Enable TxD and RxD
+f057 86 0c             LDAA
+0161             STAA    SCCR2           ;
+f059 b7 10 2d             STAA
+0162             PULA                    ; Restore A
+f05c 32             PULA
+0163             RTS                     ; Done
+f05d 39             RTS
+0164 
+0165 
+0166 ;; Write serial port string                
+0167 ;; IN: X = NULL-terminated string to print 
+0168 ;;
+0169 SERWRITES   PSHX                    ; Save X
+f05e 3c SERWRITES
+0170             PSHB                    ; Save B
+f05f 37             PSHB
+0171 _SERSTRLOOP LDAB    0,X             ; Get next character to be transmitted
+f060 e6 00 _SERSTRLOOP
+0172             BEQ     _SERSTRDONE     ; If NULL terminator, done
+f062 27 06             BEQ
+0173             JSR     SERWRITEC       ; Write character to SCI
+f064 bd f0 6d             JSR
+0174             INX                     ; Next character
+f067 08             INX
+0175             BRA     _SERSTRLOOP     ; Continue
+f068 20 f6             BRA
+0176 _SERSTRDONE PULB                    ; Restore B
+f06a 33 _SERSTRDONE
+0177             PULX                    ; Restore X
+f06b 38             PULX
+0178             RTS                     ; Done
+f06c 39             RTS
+0179 
+0180 
+0181 ;; Write serial port character 
+0182 ;; IN: B = character to print  
+0183 ;;
+0184 SERWRITEC   PSHA                    ; Save A
+f06d 36 SERWRITEC
+0185 _SERCHRWAIT LDAA    SCSR            ; Transmit register empty?
+f06e b6 10 2e _SERCHRWAIT
+0186             ANDA    #TDRE           ;
+f071 84 80             ANDA
+0187             BEQ     _SERCHRWAIT     ;
+f073 27 f9             BEQ
+0188             STAB    SCDR            ; Transmit contents of B
+f075 f7 10 2f             STAB
+0189             PULA                    ; Restore A
+f078 32             PULA
+0190             RTS                     ; Done
+f079 39             RTS
+0191 
+0192 
+0193 ;; Read string from serial port                                           
+0194 ;; OUT: INBUFF & INBUFFLEN contain the received data (CR or LF end input) 
+0195 ;;
+0196 SERREADS    PSHA                    ; Save A
+f07a 36 SERREADS
+0197             PSHB                    ; Save B
+f07b 37             PSHB
+0198             PSHX                    ; Save X
+f07c 3c             PSHX
+0199 _SERREAD1   JSR     SERREADC        ; Read character from SCI
+f07d bd f0 d3 _SERREAD1
+0200             CMPA    #BS             ; Backspace - delete last character
+f080 81 08             CMPA
+0201             BEQ     _SERBKSPACE     ;
+f082 27 1f             BEQ
+0202             CMPA    #CR             ; Carriage return - NULL terminate string
+f084 81 0d             CMPA
+0203             BNE     _SERREAD15      ;
+f086 26 04             BNE
+0204             LDAA    #0              ; NULL-terminate
+f088 86 00             LDAA
+0205             BRA     _SERREAD2       ;
+f08a 20 06             BRA
+0206 _SERREAD15  CMPA    #LF             ; Line feed - NULL terminate string
+f08c 81 0a _SERREAD15
+0207             BNE     _SERREAD2       ;
+f08e 26 02             BNE
+0208             LDAA    #0              ; NULL-terminate
+f090 86 00             LDAA
+0209 _SERREAD2   LDX     #INBUFF         ; Get input buffer
+f092 ce 00 90 _SERREAD2
+0210             LDAB    INBUFFLEN       ; Get input buffer length
+f095 d6 e0             LDAB
+0211             ABX                     ; Offset past current data
+f097 3a             ABX
+0212             STAA    0,X             ; Store character in buffer
+f098 a7 00             STAA
+0213             INCB                    ; Increment string length
+f09a 5c             INCB
+0214             STAB    INBUFFLEN       ; Store string length
+f09b d7 e0             STAB
+0215             CMPA    #0              ; If NULL (end of string), execute command
+f09d 81 00             CMPA
+0216             BNE     _SERREAD1       ; If NOT CR - continue
+f09f 26 dc             BNE
+0217             BRA     _SERRDDONE      ; CR - Done
+f0a1 20 09             BRA
+0218 _SERBKSPACE LDAA    INBUFFLEN       ; Get character string length
+f0a3 96 e0 _SERBKSPACE
+0219             BEQ     _SERREAD1       ; If string length is zero - done
+f0a5 27 d6             BEQ
+0220             DECA                    ; Decrement string length
+f0a7 4a             DECA
+0221             STAA    INBUFFLEN       ; Store new string length
+f0a8 97 e0             STAA
+0222             BRA     _SERREAD1       ; Continue
+f0aa 20 d1             BRA
+0223 _SERRDDONE  PULX                    ; Restore X
+f0ac 38 _SERRDDONE
+0224             PULB                    ; Restore B
+f0ad 33             PULB
+0225             PULA                    ; Restore A
+f0ae 32             PULA
+0226             RTS                     ; Done
+f0af 39             RTS
+0227 
+0228 
+0229 ;; Read raw input from the serial port 
+0230 ;; IN: B = number of chars to read
+0231 ;;
+0232 SERREADRAW  PSHA                    ; Save A
+f0b0 36 SERREADRAW
+0233             PSHB                    ; Save B
+f0b1 37             PSHB
+0234             PSHX                    ; Save X
+f0b2 3c             PSHX
+0235             LDX     #INBUFF         ; Get input buffer
+f0b3 ce 00 90             LDX
+0236 _SERREADR1  CMPB    #0              ; No more characters to read?
+f0b6 c1 00 _SERREADR1
+0237             BEQ     _SERREADDN      ;
+f0b8 27 11             BEQ
+0238             JSR     SERREADCX       ; Read byte from SCI (no echo)
+f0ba bd f0 e5             JSR
+0239             CMPA    #LF             ; Line-feed return - ignore
+f0bd 81 0a             CMPA
+0240             BEQ     _SERREADR1      ;
+f0bf 27 f5             BEQ
+0241             CMPA    #CR             ; Carriage return - ignore
+f0c1 81 0d             CMPA
+0242             BEQ     _SERREADR1      ;
+f0c3 27 f1             BEQ
+0243             STAA    0,X             ; Store byte in buffer
+f0c5 a7 00             STAA
+0244             INX                     ; Increment to next character position
+f0c7 08             INX
+0245             DECB                    ; Decrement byte count
+f0c8 5a             DECB
+0246             BRA     _SERREADR1      ; Continue reading...
+f0c9 20 eb             BRA
+0247 _SERREADDN  LDAA    #0              ; Terminate the string
+f0cb 86 00 _SERREADDN
+0248             STAA    0,X             ;
+f0cd a7 00             STAA
+0249             PULX                    ; Restore X
+f0cf 38             PULX
+0250             PULB                    ; Restore B
+f0d0 33             PULB
+0251             PULA                    ; Restore A
+f0d1 32             PULA
+0252             RTS                     ; Done
+f0d2 39             RTS
+0253 
+0254 
+0255 ;; Read character from serial port  
+0256 ;; OUT: A = character read from SCI
+0257 ;;
+0258 SERREADC   PSHB                    ; Save B
+f0d3 37 SERREADC
+0259 _SERREADC1 LDAA    SCSR            ; Check for received character
+f0d4 b6 10 2e _SERREADC1
+0260            ANDA    #$20            ;
+f0d7 84 20            ANDA
+0261            BEQ     _SERREADC1      ; No characters - wait
+f0d9 27 f9            BEQ
+0262            LDAA    SCDR            ;
+f0db b6 10 2f            LDAA
+0263            PSHA                    ; Copy A -> B
+f0de 36            PSHA
+0264            PULB                    ;
+f0df 33            PULB
+0265            JSR     SERWRITEC       ; Echo character to remote console
+f0e0 bd f0 6d            JSR
+0266            PULB                    ; Restore B
+f0e3 33            PULB
+0267            RTS                     ; Done
+f0e4 39            RTS
+0268 
+0269 ;; Read character from serial port (no echo)
+0270 ;; OUT: A = character read from SCI        
+0271 ;;
+0272 SERREADCX LDAA     SCSR            ; Check for received character
+f0e5 b6 10 2e SERREADCX
+0273            ANDA    #$20            ;
+f0e8 84 20            ANDA
+0274            BEQ     SERREADCX      ; No characters - wait
+f0ea 27 f9            BEQ
+0275            LDAA    SCDR            ;
+f0ec b6 10 2f            LDAA
+0276            RTS                     ; Done
+f0ef 39            RTS
+0277 
+0278 
+0279 ;; Determine command specified by user    
+0280 ;; INTX X = NULL-terminated command string
+0281 ;; OUT: A = command index number          
+0282 ;;
+0283 PARSECMDS   PSHB                    ; Save B
+f0f0 37 PARSECMDS
+0284             PSHX                    ; Save X
+f0f1 3c             PSHX
+0285             PSHY                    ; Save Y
+f0f2 18 3c             PSHY
+0286             JSR     SERPRTCR        ; Start a newline
+f0f4 bd f3 b5             JSR
+0287             LDAB    #1              ; Initialize command array counter
+f0f7 c6 01             LDAB
+0288             LDX     #INBUFF         ; Load pointer to input buffer string
+f0f9 ce 00 90             LDX
+0289             LDAA    0,X             ;
+f0fc a6 00             LDAA
+0290             CMPA    #0              ; If it's an empty string, exit
+f0fe 81 00             CMPA
+0291             BEQ     _PARSEDONE      ;
+f100 27 28             BEQ
+0292             LDY     #COMMANDS       ; Load pointer to command array string
+f102 18 ce f4 f5             LDY
+0293 _EXECLOOP   JSR     STRCMP          ; Compare command strings
+f106 bd f3 ca _EXECLOOP
+0294             CMPA    #0              ;
+f109 81 00             CMPA
+0295             BEQ     _FOUNDCMD       ; Found command (command number in B)
+f10b 27 11             BEQ
+0296             INCB                    ; Increment command array counter
+f10d 5c             INCB
+0297 _NEXTCMD    INY                     ;
+f10e 18 08 _NEXTCMD
+0298             LDAA    0,Y             ;
+f110 18 a6 00             LDAA
+0299             BNE     _NEXTCMD        ; Loop until next command
+f113 26 f9             BNE
+0300             INY                     ;
+f115 18 08             INY
+0301             LDAA    0,Y             ;
+f117 18 a6 00             LDAA
+0302             BEQ     _BADCMD         ; End of command array and not found - done
+f11a 27 06             BEQ
+0303             BRA     _EXECLOOP       ;
+f11c 20 e8             BRA
+0304 _FOUNDCMD   PSHB                    ; Copy B -> A
+f11e 37 _FOUNDCMD
+0305             PULA                    ;
+f11f 32             PULA
+0306             BRA     _PARSEDONE      ; 
+f120 20 08             BRA
+0307 _BADCMD     LDX     #UNKWNCMDSTR    ; Load invalid command string text
+f122 ce f5 a6 _BADCMD
+0308             JSR     SERWRITES       ; Write message to serial port
+f125 bd f0 5e             JSR
+0309             LDAA    #0              ; Bad command id
+f128 86 00             LDAA
+0310 _PARSEDONE  PULY                    ; Restore Y
+f12a 18 38 _PARSEDONE
+0311             PULX                    ; Restore X
+f12c 38             PULX
+0312             PULB                    ; Restore B
+f12d 33             PULB
+0313             RTS                     ; Done - return to input handler loop
+f12e 39             RTS
+0314 
+0315 
+0316 ;; Dispatch to chosen command
+0317 ;; IN: A = Command id        
+0318 ;;
+0319 EXECUTECMD  PSHA                    ; Save A
+f12f 36 EXECUTECMD
+0320             PSHB                    ; Save B
+f130 37             PSHB
+0321             PSHX                    ; Save X
+f131 3c             PSHX
+0322             CMPA    #1              ; #1: Dump
+f132 81 01             CMPA
+0323             BEQ     _CMD1           ;
+f134 27 28             BEQ
+0324             CMPA    #2              ; #2: Enter
+f136 81 02             CMPA
+0325             BEQ     _CMD2           ;
+f138 27 29             BEQ
+0326             CMPA    #3              ; #3: Go
+f13a 81 03             CMPA
+0327             BEQ     _CMD3           ;
+f13c 27 2a             BEQ
+0328             CMPA    #4              ; #4: Srec
+f13e 81 04             CMPA
+0329             BEQ     _CMD4           ;
+f140 27 2b             BEQ
+0330             CMPA    #5              ; #5: Reset
+f142 81 05             CMPA
+0331             BEQ     _CMD5           ;
+f144 27 2c             BEQ
+0332             CMPA    #6              ; #6: API  routines list
+f146 81 06             CMPA
+0333             BEQ     _CMD6           ;
+f148 27 2d             BEQ
+0334             CMPA    #7              ; #7: Registers
+f14a 81 07             CMPA
+0335             BEQ     _CMD7           ;
+f14c 27 31             BEQ
+0336             CMPA    #8              ; #7: Help
+f14e 81 08             CMPA
+0337             BEQ     _CMD8           ;
+f150 27 32             BEQ
+0338             CMPA    #9              ; #8: ?
+f152 81 09             CMPA
+0339             BEQ     _CMD9           ;
+f154 27 2f             BEQ
+0340             LDX     #UNKWNCMDSTR    ; Invalid command
+f156 ce f5 a6             LDX
+0341             JSR     SERWRITES       ;
+f159 bd f0 5e             JSR
+0342             BRA     _CMDDISPDN      ;
+f15c 20 2d             BRA
+0343 _CMD1       JSR     DUMPMEM         ; Dump memory contents
+f15e bd f3 45 _CMD1
+0344             BRA     _CMDDISPDN      ;
+f161 20 28             BRA
+0345 _CMD2       JSR     ENTERMEM        ; Enter memory contents
+f163 bd f2 26 _CMD2
+0346             BRA     _CMDDISPDN      ;
+f166 20 23             BRA
+0347 _CMD3       JSR     JUMPTO          ; Go
+f168 bd f2 ae _CMD3
+0348             BRA     _CMDDISPDN      ;
+f16b 20 1e             BRA
+0349 _CMD4       JSR     SRECDOWNLD      ; Download & execute S-Record code
+f16d bd f1 8f _CMD4
+0350             BRA     _CMDDISPDN      ;
+f170 20 19             BRA
+0351 _CMD5       JSR     WEEZER          ; Reset
+f172 bd f0 00 _CMD5
+0352             BRA     _CMDDISPDN      ;
+f175 20 14             BRA
+0353 _CMD6       LDX     #APIRTNSTXT     ; Monitor routines list
+f177 ce f7 57 _CMD6
+0354             JSR     SERWRITES       ;
+f17a bd f0 5e             JSR
+0355             BRA     _CMDDISPDN      ;
+f17d 20 0c             BRA
+0356 _CMD7       JSR     DUMPREGS        ; Registers
+f17f bd f2 d4 _CMD7
+0357             BRA     _CMDDISPDN      ;
+f182 20 07             BRA
+0358 _CMD8       NOP                     ;
+f184 01 _CMD8
+0359 _CMD9       LDX     #HELPTEXT       ; ?/Help
+f185 ce f6 10 _CMD9
+0360             JSR     SERWRITES       ;
+f188 bd f0 5e             JSR
+0361 _CMDDISPDN  PULX                    ; Restore X
+f18b 38 _CMDDISPDN
+0362             PULB                    ; Restore B
+f18c 33             PULB
+0363             PULA                    ; Restore A
+f18d 32             PULA
+0364             RTS                     ; Done
+f18e 39             RTS
+0365 
+0366 
+0367 ;; S-Record download & execute 
+0368 ;;
+0369 SRECDOWNLD  PSHA                    ; Save A
+f18f 36 SRECDOWNLD
+0370             PSHB                    ; Save B
+f190 37             PSHB
+0371             PSHX                    ; Save X
+f191 3c             PSHX
+0372             PSHY                    ; Save Y
+f192 18 3c             PSHY
+0373             LDX     #RECEIVESTR     ; Load receive string for display
+f194 ce f5 bb             LDX
+0374             JSR     SERWRITES       ; Write string to serial port
+f197 bd f0 5e             JSR
+0375 _SRECGETLN  LDAB    #2              ; Read the first two characters (Sn header)
+f19a c6 02 _SRECGETLN
+0376             JSR     SERREADRAW      ;
+f19c bd f0 b0             JSR
+0377             LDX     #INBUFF         ; Load pointer to S-Record line
+f19f ce 00 90             LDX
+0378             LDY     #SREC_S1HDR     ; Load pointer to S1 header string
+f1a2 18 ce f4 ef             LDY
+0379             JSR     STRCMP          ; Compare command strings
+f1a6 bd f3 ca             JSR
+0380             CMPA    #0              ;
+f1a9 81 00             CMPA
+0381             BEQ     _FOUNDS1HDR     ; Found S1 header
+f1ab 27 19             BEQ
+0382             LDY     #SREC_S9HDR     ; Load pointer to S9 header string
+f1ad 18 ce f4 f2             LDY
+0383             JSR     STRCMP          ; Compare command strings
+f1b1 bd f3 ca             JSR
+0384             CMPA    #0              ;
+f1b4 81 00             CMPA
+0385             BEQ     _FOUNDS9HDR     ; Found S9 header
+f1b6 27 13             BEQ
+0386             LDX     #SRECERRSTR     ; ERROR: unrecognized S-Record header
+f1b8 ce f6 00             LDX
+0387             JSR     LCDCLEAR        ; Clear the LCD display
+f1bb bd f3 f9             JSR
+0388             JSR     LCDWRITES       ; Write string to serial port
+f1be bd f4 66             JSR
+0389             JSR     SERWRITES       ; Write string to serial port
+f1c1 bd f0 5e             JSR
+0390             BRA     _SRECDONE       ;
+f1c4 20 5a             BRA
+0391 _FOUNDS1HDR LDAA    #SRECHDR_S1     ; Keep track of the current line type (S1)
+f1c6 86 01 _FOUNDS1HDR
+0392             PSHA                    ;
+f1c8 36             PSHA
+0393             BRA     _SRECCOMMON     ;
+f1c9 20 03             BRA
+0394 _FOUNDS9HDR LDAA    #SRECHDR_S9     ; Keep track of the current line type (S9)
+f1cb 86 02 _FOUNDS9HDR
+0395             PSHA                    ;
+f1cd 36             PSHA
+0396 _SRECCOMMON LDAB    #2              ; Get the number of remaining bytes in the line
+f1ce c6 02 _SRECCOMMON
+0397             JSR     SERREADRAW      ;
+f1d0 bd f0 b0             JSR
+0398             JSR     ASCII2HEX       ; Convert ASCII byte count to hex (result in A)
+f1d3 bd f2 80             JSR
+0399             PSHA                    ; Save number of bytes
+f1d6 36             PSHA
+0400 _SRECADDR   LDAB    #4              ; Get the address
+f1d7 c6 04 _SRECADDR
+0401             JSR     SERREADRAW      ;
+f1d9 bd f0 b0             JSR
+0402             JSR     ASCII2HEX       ; Convert ASCII addrH to hex (result in A)
+f1dc bd f2 80             JSR
+0403             TAB                     ; A (addrH) -> B
+f1df 16             TAB
+0404             INX                     ; Index to the address Low field
+f1e0 08             INX
+0405             INX                     ;
+f1e1 08             INX
+0406             JSR     ASCII2HEX       ; Convert ASCII addrL to hex (result in A)
+f1e2 bd f2 80             JSR
+0407             PSHA                    ; Push AddrL onto stack
+f1e5 36             PSHA
+0408             PSHB                    ; Push AddrH onto stack
+f1e6 37             PSHB
+0409             PULY                    ; Pull AddrH & AddrL (16-bits) into Y
+f1e7 18 38             PULY
+0410             STY     SRECADDR        ; Store the address for later
+f1e9 18 df e2             STY
+0411             PULB                    ; Decrement the byte count by two bytes (address)
+f1ec 33             PULB
+0412             DECB                    ;
+f1ed 5a             DECB
+0413             DECB                    ;
+f1ee 5a             DECB
+0414             DECB                    ; Decrement by one byte (checksum) to get number of data bytes
+f1ef 5a             DECB
+0415             CMPB    #0              ; No data bytes (ex S9 record), skip to checksum
+f1f0 c1 00             CMPB
+0416             BEQ     _SRECCHK        ;
+f1f2 27 16             BEQ
+0417             PSHB                    ; Save byte count
+f1f4 37             PSHB
+0418             LSLB                    ; x2 since each byte is two characters
+f1f5 58             LSLB
+0419             JSR     SERREADRAW      ; Read the S-Record data bytes
+f1f6 bd f0 b0             JSR
+0420             PULB                    ; Retrieve byte count
+f1f9 33             PULB
+0421             LDX     #INBUFF         ; Load pointer to start of S-Record line
+f1fa ce 00 90             LDX
+0422 _STORESREC  JSR     ASCII2HEX       ; Convert ASCII byte to hex (result in A)
+f1fd bd f2 80 _STORESREC
+0423             STAA    0,Y             ; Store the converted byte value
+f200 18 a7 00             STAA
+0424             INX                     ;
+f203 08             INX
+0425             INX                     ;
+f204 08             INX
+0426             INY                     ;
+f205 18 08             INY
+0427             DECB                    ; Decrement the byte count
+f207 5a             DECB
+0428             BNE     _STORESREC      ; Continue until we're finished
+f208 26 f3             BNE
+0429 _SRECCHK    LDAB    #2              ; Read the S-Record checksum byte
+f20a c6 02 _SRECCHK
+0430             JSR     SERREADRAW      ; 
+f20c bd f0 b0             JSR
+0431 ;;
+0432 ;; NOTE: we're ignoring the checksum - may want to fix this in the future.
+0433 ;;
+0434             PULA                    ; Recall the S-Record type from the stack
+f20f 32             PULA
+0435             CMPA    #SRECHDR_S1     ; Is it an S1 header?  If so, there's more to read...
+f210 81 01             CMPA
+0436             BEQ     _SRECGETLN      ; Found S1 header, continue reading.
+f212 27 86             BEQ
+0437 _SRECLASTLN LDX     #JUMPINGSTR     ; Load jumping string for display
+f214 ce f5 e9 _SRECLASTLN
+0438             JSR     SERWRITES       ; Write string to serial port
+f217 bd f0 5e             JSR
+0439             LDY     SRECADDR        ; Recall the last address (should be S9 jump address)
+f21a 18 de e2             LDY
+0440             JSR     0,Y             ; Jump to the address in Y
+f21d 18 ad 00             JSR
+0441 _SRECDONE   PULY                    ; Restore Y
+f220 18 38 _SRECDONE
+0442             PULX                    ; Restore X
+f222 38             PULX
+0443             PULB                    ; Restore B
+f223 33             PULB
+0444             PULA                    ; Restore A
+f224 32             PULA
+0445             RTS                     ; Done
+f225 39             RTS
+0446 
+0447 ;; Enter memory            
+0448 ;;
+0449 ENTERMEM   PSHA                    ; Save A
+f226 36 ENTERMEM
+0450             PSHB                    ; Save B
+f227 37             PSHB
+0451             PSHX                    ; Save X
+f228 3c             PSHX
+0452             PSHY                    ; Save Y
+f229 18 3c             PSHY
+0453             LDX     #GETADDRSTR     ; Prompt for address
+f22b ce f5 f6             LDX
+0454             JSR     SERWRITES       ;
+f22e bd f0 5e             JSR
+0455             JSR     CLEARINPUT      ;
+f231 bd f0 43             JSR
+0456             JSR     SERREADS        ;
+f234 bd f0 7a             JSR
+0457             LDX     #INBUFF         ; Get a pointer to the input buffer
+f237 ce 00 90             LDX
+0458             JSR     ASCII2HEX       ; Convert ASCII addrH to hex (result in A)
+f23a bd f2 80             JSR
+0459             TAB                     ; A (addrH) -> B
+f23d 16             TAB
+0460             INX                     ; Index to the address Low field
+f23e 08             INX
+0461             INX                     ;
+f23f 08             INX
+0462             JSR     ASCII2HEX       ; Convert ASCII addrL to hex (result in A)
+f240 bd f2 80             JSR
+0463             PSHA                    ; Push AddrL onto stack
+f243 36             PSHA
+0464             PSHB                    ; Push AddrH onto stack
+f244 37             PSHB
+0465             PULY                    ; Pull AddrH & AddrL (16-bits) into Y
+f245 18 38             PULY
+0466             LDX     #ENTERSTR       ; Display enter data string
+f247 ce f5 61             LDX
+0467             JSR     SERWRITES       ;
+f24a bd f0 5e             JSR
+0468 _ENTERLOOP  JSR     CLEARINPUT      ; Clear input buffer and length
+f24d bd f0 43 _ENTERLOOP
+0469             JSR     SERREADS        ; Read serial string (i.e. byte text)
+f250 bd f0 7a             JSR
+0470             JSR     SERPRTCR        ; Print CR to SCI
+f253 bd f3 b5             JSR
+0471             LDX     #INBUFF         ; Check for 0 (indicating done)
+f256 ce 00 90             LDX
+0472             LDAA    0,X             ;
+f259 a6 00             LDAA
+0473             BEQ     _ENTERDONE      ;
+f25b 27 0a             BEQ
+0474             JSR     ASCII2HEX       ; Convert ASCII byte to hex
+f25d bd f2 80             JSR
+0475             STAA    0,Y             ; Store data byte
+f260 18 a7 00             STAA
+0476             INY                     ;
+f263 18 08             INY
+0477             BRA     _ENTERLOOP      ; Continue with input stream
+f265 20 e6             BRA
+0478 _ENTERDONE  PULY                    ; Restore Y
+f267 18 38 _ENTERDONE
+0479             PULX                    ; Restore X
+f269 38             PULX
+0480             PULB                    ; Restore B
+f26a 33             PULB
+0481             PULA                    ; Restore A
+f26b 32             PULA
+0482             RTS                     ; Done
+f26c 39             RTS
+0483 
+0484 
+0485 ;; Get input buffer address 
+0486 ;;
+0487 GETINBADDR  LDX     #INBUFF
+f26d ce 00 90 GETINBADDR
+0488             RTS
+f270 39             RTS
+0489 
+0490 
+0491 ;; Get input buffer address 
+0492 ;;
+0493 GETINBLEN   LDX     #INBUFFLEN
+f271 ce 00 e0 GETINBLEN
+0494             RTS
+f274 39             RTS
+0495 
+0496 
+0497 ;; Convert text to upper case   
+0498 ;; IN: A = character to convert
+0499 ;;
+0500 TOUPPER     CMPA    #'a'            ; If ASCII digit isn't a character, skip
+f275 81 61 TOUPPER
+0501             BLO     _UPCASEDONE     ;
+f277 25 06             BLO
+0502             CMPA    #'z'            ;
+f279 81 7a             CMPA
+0503             BHI     _UPCASEDONE     ;
+f27b 22 02             BHI
+0504             SUBA    #$20            ; Convert lower case to upper case
+f27d 80 20             SUBA
+0505 _UPCASEDONE RTS                     ; Done
+f27f 39 _UPCASEDONE
+0506 
+0507 
+0508 ;; Convert text to binary               
+0509 ;; IN:  LDX = input string (two digits)
+0510 ;; OUT: A   = converted byte value    
+0511 ;;
+0512 ASCII2HEX   PSHX                    ; Save X
+f280 3c ASCII2HEX
+0513             LDAA    0,X             ;
+f281 a6 00             LDAA
+0514             JSR     TOUPPER         ; If character, convert to uppercase
+f283 bd f2 75             JSR
+0515             CMPA    #$41            ; Is digit a character?
+f286 81 41             CMPA
+0516             BLO     _ISNUMBER       ; No - assume number
+f288 25 04             BLO
+0517 _ISALPHA    SUBA    #$37            ; Convert character to hex value
+f28a 80 37 _ISALPHA
+0518             BRA     _ASCII1         ;
+f28c 20 02             BRA
+0519 _ISNUMBER   SUBA    #$30            ; Convert number to hex value
+f28e 80 30 _ISNUMBER
+0520 _ASCII1     ANDA    #$0F            ; Mask upper nibble bits
+f290 84 0f _ASCII1
+0521             LSLA                    ; First digit is upper nibble - shift
+f292 48             LSLA
+0522             LSLA                    ;
+f293 48             LSLA
+0523             LSLA                    ;
+f294 48             LSLA
+0524             LSLA                    ;
+f295 48             LSLA
+0525             STAA    TEMP            ; Save number in temporary variable
+f296 97 e1             STAA
+0526 _NEXTDIGIT  INX                     ; Move to second digit
+f298 08 _NEXTDIGIT
+0527             LDAA    0,X             ;
+f299 a6 00             LDAA
+0528             JSR     TOUPPER         ; If character, convert to uppercase
+f29b bd f2 75             JSR
+0529             CMPA    #$41            ; Is digit a character?
+f29e 81 41             CMPA
+0530             BLO     _ISNUMBER2      ; No - assume number
+f2a0 25 04             BLO
+0531 _ISALPHA2   SUBA    #$37            ; Convert character to hex value
+f2a2 80 37 _ISALPHA2
+0532             BRA     _ASCII2         ;
+f2a4 20 02             BRA
+0533 _ISNUMBER2  SUBA    #$30            ; Convert number to hex value
+f2a6 80 30 _ISNUMBER2
+0534 _ASCII2     ANDA    #$0F            ; Mask upper nibble bits
+f2a8 84 0f _ASCII2
+0535             ORAA    TEMP            ; Or in upper nibble bits
+f2aa 9a e1             ORAA
+0536             PULX                    ; Restore X
+f2ac 38             PULX
+0537             RTS                     ; Done
+f2ad 39             RTS
+0538 
+0539 
+0540 ;; Jump to specified address (prompted) 
+0541 ;;
+0542 JUMPTO      PSHA                    ; Save A
+f2ae 36 JUMPTO
+0543             PSHB                    ; Save B
+f2af 37             PSHB
+0544             PSHX                    ; Save X
+f2b0 3c             PSHX
+0545             LDX     #GETADDRSTR     ; Prompt for address
+f2b1 ce f5 f6             LDX
+0546             JSR     SERWRITES       ;
+f2b4 bd f0 5e             JSR
+0547             JSR     CLEARINPUT      ;
+f2b7 bd f0 43             JSR
+0548             JSR     SERREADS        ;
+f2ba bd f0 7a             JSR
+0549             LDX     #INBUFF         ; Get a pointer to the input buffer
+f2bd ce 00 90             LDX
+0550             JSR     ASCII2HEX       ; Convert ASCII addrH to hex (result in A)
+f2c0 bd f2 80             JSR
+0551             TAB                     ; A (addrH) -> B
+f2c3 16             TAB
+0552             INX                     ; Index to the address Low field
+f2c4 08             INX
+0553             INX                     ;
+f2c5 08             INX
+0554             JSR     ASCII2HEX       ; Convert ASCII addrL to hex (result in A)
+f2c6 bd f2 80             JSR
+0555             PSHA                    ; Push AddrL onto stack
+f2c9 36             PSHA
+0556             PSHB                    ; Push AddrH onto stack
+f2ca 37             PSHB
+0557             PULY                    ; Pull AddrH & AddrL (16-bits) into Y
+f2cb 18 38             PULY
+0558             PULX                    ; Restore X
+f2cd 38             PULX
+0559             PULB                    ; Restore B
+f2ce 33             PULB
+0560             PULA                    ; Restore A
+f2cf 32             PULA
+0561             JSR     0,Y             ; Jump to address stored in Y
+f2d0 18 ad 00             JSR
+0562             RTS
+f2d3 39             RTS
+0563 
+0564 
+0565 ;; Dump registers 
+0566 ;;
+0567 ;;
+0568 DUMPREGS    PSHA                    ; Save A
+f2d4 36 DUMPREGS
+0569             PSHB                    ; Save B
+f2d5 37             PSHB
+0570             PSHX                    ; Save X
+f2d6 3c             PSHX
+0571             PSHY                    ; Save Y
+f2d7 18 3c             PSHY
+0572             PSHX                    ;
+f2d9 3c             PSHX
+0573             LDX     #DUMPREGSSTR    ; Dump registers title
+f2da ce f5 36             LDX
+0574             JSR     SERWRITES       ;
+f2dd bd f0 5e             JSR
+0575             LDX     #REGLABELA      ; Register A label
+f2e0 ce f5 45             LDX
+0576             JSR     SERWRITES       ;
+f2e3 bd f0 5e             JSR
+0577             JSR     SERPRTSPC       ; 
+f2e6 bd f3 c2             JSR
+0578             PSHB                    ;
+f2e9 37             PSHB
+0579             TAB                     ;
+f2ea 16             TAB
+0580             JSR     SERPRTBYTE      ; A value
+f2eb bd f3 9e             JSR
+0581             JSR     SERPRTCR        ; 
+f2ee bd f3 b5             JSR
+0582             LDX     #REGLABELB      ; Register B label
+f2f1 ce f5 49             LDX
+0583             JSR     SERWRITES       ;
+f2f4 bd f0 5e             JSR
+0584             JSR     SERPRTSPC       ; 
+f2f7 bd f3 c2             JSR
+0585             PULB                    ;
+f2fa 33             PULB
+0586             JSR     SERPRTBYTE      ; B value
+f2fb bd f3 9e             JSR
+0587             JSR     SERPRTCR        ; 
+f2fe bd f3 b5             JSR
+0588             LDX     #REGLABELIX     ; Register IX label
+f301 ce f5 4d             LDX
+0589             JSR     SERWRITES       ;
+f304 bd f0 5e             JSR
+0590             PULA                    ; Pull top of 16-bit register X into A
+f307 32             PULA
+0591             PULB                    ; Pull bottom of 16-bit register X into B
+f308 33             PULB
+0592             JSR     SERPRTWORD      ; IX value
+f309 bd f3 a9             JSR
+0593             JSR     SERPRTCR        ; 
+f30c bd f3 b5             JSR
+0594             PSHY                    ;
+f30f 18 3c             PSHY
+0595             LDX     #REGLABELIY     ; Register IY label
+f311 ce f5 52             LDX
+0596             JSR     SERWRITES       ;
+f314 bd f0 5e             JSR
+0597             PULA                    ; Pull top of 16-bit register Y into A
+f317 32             PULA
+0598             PULB                    ; Pull bottom of 16-bit register Y into B
+f318 33             PULB
+0599             JSR     SERPRTWORD      ; IY value
+f319 bd f3 a9             JSR
+0600             JSR     SERPRTCR        ; 
+f31c bd f3 b5             JSR
+0601             LDX     #REGLABELSP     ; Register SP label
+f31f ce f5 57             LDX
+0602             JSR     SERWRITES       ;
+f322 bd f0 5e             JSR
+0603             TSX                     ; Move SP into IX
+f325 30             TSX
+0604             XGDX                    ; Exchange D and IX
+f326 8f             XGDX
+0605             JSR     SERPRTWORD      ; SP value
+f327 bd f3 a9             JSR
+0606             JSR     SERPRTCR        ; 
+f32a bd f3 b5             JSR
+0607             XGDX                    ; Exchange D and IX back again
+f32d 8f             XGDX
+0608             LDX     #REGLABELCC     ; Register CC label
+f32e ce f5 5c             LDX
+0609             JSR     SERWRITES       ;
+f331 bd f0 5e             JSR
+0610             TPA                     ; Move CC into A
+f334 07             TPA
+0611             TAB                     ; Move A into B
+f335 16             TAB
+0612             JSR     SERPRTBYTE      ; B value
+f336 bd f3 9e             JSR
+0613             JSR     SERPRTCR        ; 
+f339 bd f3 b5             JSR
+0614             JSR     SERPRTCR        ; 
+f33c bd f3 b5             JSR
+0615             PULY                    ;
+f33f 18 38             PULY
+0616             PULX                    ;
+f341 38             PULX
+0617             PULB                    ;
+f342 33             PULB
+0618             PULA                    ;
+f343 32             PULA
+0619             RTS                     ;
+f344 39             RTS
+0620 
+0621 
+0622 ;; Dump memory contents    
+0623 ;;
+0624 DUMPMEM     PSHA                    ; Save A
+f345 36 DUMPMEM
+0625             PSHB                    ; Save B
+f346 37             PSHB
+0626             PSHX                    ; Save X
+f347 3c             PSHX
+0627             LDX     #GETADDRSTR     ; Prompt for address
+f348 ce f5 f6             LDX
+0628             JSR     SERWRITES       ;
+f34b bd f0 5e             JSR
+0629             JSR     CLEARINPUT      ;
+f34e bd f0 43             JSR
+0630             JSR     SERREADS        ;
+f351 bd f0 7a             JSR
+0631             LDX     #INBUFF         ; Get a pointer to the input buffer
+f354 ce 00 90             LDX
+0632             JSR     ASCII2HEX       ; Convert ASCII addrH to hex (result in A)
+f357 bd f2 80             JSR
+0633             TAB                     ; A (addrH) -> B
+f35a 16             TAB
+0634             INX                     ; Index to the address Low field
+f35b 08             INX
+0635             INX                     ;
+f35c 08             INX
+0636             JSR     ASCII2HEX       ; Convert ASCII addrL to hex (result in A)
+f35d bd f2 80             JSR
+0637             PSHA                    ; Push AddrL onto stack
+f360 36             PSHA
+0638             PSHB                    ; Push AddrH onto stack
+f361 37             PSHB
+0639             LDX     #DUMPSTR        ; Load dump text
+f362 ce f5 1f             LDX
+0640             JSR     SERWRITES       ;
+f365 bd f0 5e             JSR
+0641             LDAA    #0              ; Zero counter
+f368 86 00             LDAA
+0642             STAA    TEMP
+f36a 97 e1             STAA
+0643             PULX                    ; Pull AddrH & AddrL (16-bits) into X
+f36c 38             PULX
+0644 _DUMPMEM1   LDAA    #0
+f36d 86 00 _DUMPMEM1
+0645 _DUMPLOOP   LDAB    0,X             ; Load byte from receive buffer
+f36f e6 00 _DUMPLOOP
+0646             JSR     SERPRTBYTE      ; Print byte in ascii to SCI
+f371 bd f3 9e             JSR
+0647             JSR     SERPRTSPC       ; Print space
+f374 bd f3 c2             JSR
+0648             INX                     ; Next byte
+f377 08             INX
+0649             INCA                    ; Increment byte count
+f378 4c             INCA
+0650             CMPA    #$10
+f379 81 10             CMPA
+0651             BNE     _DUMPLOOP       ;
+f37b 26 f2             BNE
+0652             JSR     SERPRTCR        ; Print CR to SCI
+f37d bd f3 b5             JSR
+0653             ADDA    TEMP
+f380 9b e1             ADDA
+0654             STAA    TEMP
+f382 97 e1             STAA
+0655             CMPA    #$A0
+f384 81 a0             CMPA
+0656             BLO     _DUMPMEM1
+f386 25 e5             BLO
+0657 _DUMPDONE   PULX                    ; Restore X
+f388 38 _DUMPDONE
+0658             PULB                    ; Restore B
+f389 33             PULB
+0659             PULA                    ; Restore A
+f38a 32             PULA
+0660             RTS                     ; Done
+f38b 39             RTS
+0661 
+0662 
+0663 ;; Convert from binary to ASCII and output
+0664 ;; IN: B = byte to convert                
+0665 ;;
+0666 OUTLEFTH    LSRB                    ; Shift data to right
+f38c 54 OUTLEFTH
+0667             LSRB
+f38d 54             LSRB
+0668             LSRB
+f38e 54             LSRB
+0669             LSRB
+f38f 54             LSRB
+0670 OUTRIGHTH   ANDB    #$0F            ; Mask top half
+f390 c4 0f OUTRIGHTH
+0671             ADDB    #$30            ; Convert to ascii
+f392 cb 30             ADDB
+0672             CMPB    #$39
+f394 c1 39             CMPB
+0673             BLE     _OUTA           ; Jump if 0-9
+f396 2f 02             BLE
+0674             ADDB    #$07            ; Convert to hex A-F
+f398 cb 07             ADDB
+0675 _OUTA       JSR     SERWRITEC       ; Output character
+f39a bd f0 6d _OUTA
+0676             RTS
+f39d 39             RTS
+0677 
+0678 
+0679 ;; Print byte to serial port 
+0680 ;; IN: B = byte to be printed 
+0681 ;;
+0682 SERPRTBYTE  PSHB
+f39e 37 SERPRTBYTE
+0683             PSHB
+f39f 37             PSHB
+0684             JSR     OUTLEFTH        ; Output left half
+f3a0 bd f3 8c             JSR
+0685             PULB                    ; Retrieve copy
+f3a3 33             PULB
+0686             JSR     OUTRIGHTH       ; Output right half
+f3a4 bd f3 90             JSR
+0687             PULB
+f3a7 33             PULB
+0688             RTS
+f3a8 39             RTS
+0689 
+0690 
+0691 ;; Print word to serial port 
+0692 ;; IN: D = word to be printed 
+0693 ;;
+0694 SERPRTWORD  PSHA
+f3a9 36 SERPRTWORD
+0695             PSHB
+f3aa 37             PSHB
+0696             TAB
+f3ab 16             TAB
+0697             JSR     SERPRTBYTE      ; Print top byte
+f3ac bd f3 9e             JSR
+0698             PULB                 
+f3af 33             PULB
+0699             JSR     SERPRTBYTE      ; Print low byte
+f3b0 bd f3 9e             JSR
+0700             PULA
+f3b3 32             PULA
+0701             RTS
+f3b4 39             RTS
+0702 
+0703 
+0704 ;; Print LF & CR to serial port
+0705 ;;
+0706 SERPRTCR    PSHB
+f3b5 37 SERPRTCR
+0707             LDAB    #CR
+f3b6 c6 0d             LDAB
+0708             JSR     SERWRITEC
+f3b8 bd f0 6d             JSR
+0709             LDAB    #LF
+f3bb c6 0a             LDAB
+0710             JSR     SERWRITEC
+f3bd bd f0 6d             JSR
+0711             PULB
+f3c0 33             PULB
+0712             RTS
+f3c1 39             RTS
+0713 
+0714 
+0715 ;; Print space to serial port 
+0716 ;;
+0717 SERPRTSPC  PSHB
+f3c2 37 SERPRTSPC
+0718             LDAB    #SPACE
+f3c3 c6 20             LDAB
+0719             JSR     SERWRITEC
+f3c5 bd f0 6d             JSR
+0720             PULB
+f3c8 33             PULB
+0721             RTS
+f3c9 39             RTS
+0722 
+0723 
+0724 ;; String compare routine                            
+0725 ;;                                                   
+0726 ;; IN:  X = Pointer to string #1                     
+0727 ;; IN:  Y = Pointer to string #2                     
+0728 ;; OUT: A = compare status (0 = match, 1 = NO match)
+0729 ;;
+0730 STRCMP      PSHB                    ; Save B
+f3ca 37 STRCMP
+0731             PSHX                    ; Save X
+f3cb 3c             PSHX
+0732             PSHY                    ; Save Y
+f3cc 18 3c             PSHY
+0733             LDAB    #0              ;
+f3ce c6 00             LDAB
+0734 _SCMPLOOP   LDAA    0,X             ; Load character from first string
+f3d0 a6 00 _SCMPLOOP
+0735             CMPA    #0              ; NULL?
+f3d2 81 00             CMPA
+0736             BEQ     _SCMPLPDONE     ;
+f3d4 27 0b             BEQ
+0737             CMPA    0,Y             ; Compare characters
+f3d6 18 a1 00             CMPA
+0738             BNE     _SCMPLPDONE     ; No match
+f3d9 26 06             BNE
+0739             INCB                    ;
+f3db 5c             INCB
+0740             INX                     ; Next character
+f3dc 08             INX
+0741             INY                     ; 
+f3dd 18 08             INY
+0742             BRA     _SCMPLOOP       ; Check next character
+f3df 20 ef             BRA
+0743 _SCMPLPDONE LDAA    0,X             ; If end of string - consider it a match
+f3e1 a6 00 _SCMPLPDONE
+0744             BEQ     _SCMPMATCH      ;
+f3e3 27 09             BEQ
+0745             LDAA    0,Y             ;
+f3e5 18 a6 00             LDAA
+0746             BEQ     _SCMPMATCH      ;
+f3e8 27 04             BEQ
+0747 _SCMPNOMAT  LDAA    #1              ; No match
+f3ea 86 01 _SCMPNOMAT
+0748             BRA     _SCMPDONE       ;
+f3ec 20 06             BRA
+0749 _SCMPMATCH  CMPB    #0              ;
+f3ee c1 00 _SCMPMATCH
+0750             BEQ     _SCMPNOMAT      ;
+f3f0 27 f8             BEQ
+0751             LDAA    #0              ;
+f3f2 86 00             LDAA
+0752 _SCMPDONE   PULY                    ; Restore Y
+f3f4 18 38 _SCMPDONE
+0753             PULX                    ; Restore X
+f3f6 38             PULX
+0754             PULB                    ; Restore X
+f3f7 33             PULB
+0755             RTS                     ; Done
+f3f8 39             RTS
+0756 
+0757 
+0758 ;; Clear LCD display 
+0759 ;;
+0760 LCDCLEAR    PSHA                    ; Save A
+f3f9 36 LCDCLEAR
+0761             LDAA    #$1             ; Clear all display and return cursor home
+f3fa 86 01             LDAA
+0762             STAA    DISPC           ;
+f3fc b7 c0 00             STAA
+0763             JSR     LCDWAIT         ;
+f3ff bd f4 86             JSR
+0764             PULA                    ; Restore A
+f402 32             PULA
+0765             RTS                     ; Done
+f403 39             RTS
+0766 
+0767 
+0768 ;; Simple ms delay routine                           
+0769 ;;                                                   
+0770 ;; IN: A = Number of ms to delay (1-255)            
+0771 ;;                                                  
+0772 ;; NOTE: *** Based on E=2 MHz (8 MHz xtal) ***     
+0773 ;;
+0774 DELAY_MS    PSHX
+f404 3c DELAY_MS
+0775             LDX     #328
+f405 ce 01 48             LDX
+0776             BRA     _DELAY_MS_1
+f408 20 03             BRA
+0777 0778             LDX     #332            ; 332*6 = 1992 cycles
+f40a ce 01 4c             LDX
+0779 0780             DEX
+f40d 09             DEX
+0781             BNE     _DELAY_MS_1
+f40e 26 fd             BNE
+0782             DECA
+f410 4a             DECA
+0783             BNE     _DELAY_MS_0
+f411 26 f7             BNE
+0784             PULX
+f413 38             PULX
+0785             RTS
+f414 39             RTS
+0786 
+0787 
+0788 ;; Initialize LCD display                            
+0789 ;;                                                   
+0790 ;; NOTE: From the Optrex LCD manual.                 
+0791 ;;
+0792 LCDINIT     PSHA                    ; Save A
+f415 36 LCDINIT
+0793             LDAA    #15             ; Wait 15ms to give Vcc time to stabilize
+f416 86 0f             LDAA
+0794             JSR     DELAY_MS        ;
+f418 bd f4 04             JSR
+0795             LDAA    #LCD_CONFIG     ; Interface len=8, 2 lines, 5x7 font
+f41b 86 38             LDAA
+0796             STAA    DISPC           ;
+f41d b7 c0 00             STAA
+0797             LDAA    #5              ; Wait 5ms
+f420 86 05             LDAA
+0798             JSR     DELAY_MS        ;
+f422 bd f4 04             JSR
+0799             LDAA    #LCD_CONFIG     ; REPEAT: Interface len=8, 2 lines, 5x7 font
+f425 86 38             LDAA
+0800             STAA    DISPC           ;
+f427 b7 c0 00             STAA
+0801             LDAA    #1              ; Wait 1ms
+f42a 86 01             LDAA
+0802             JSR     DELAY_MS        ;
+f42c bd f4 04             JSR
+0803             LDAA    #LCD_CONFIG     ; REPEAT: Interface len=8, 2 lines, 5x7 font
+f42f 86 38             LDAA
+0804             STAA    DISPC           ;
+f431 b7 c0 00             STAA
+0805             JSR     LCDWAIT         ; Busy Flag can now be checked
+f434 bd f4 86             JSR
+0806             LDAA    #LCD_CONFIG     ; Interface len=8, 2 lines, 5x7 font
+f437 86 38             LDAA
+0807             STAA    DISPC           ;
+f439 b7 c0 00             STAA
+0808             JSR     LCDWAIT         ;
+f43c bd f4 86             JSR
+0809             LDAA    #LCD_DISPON     ; Display on, cursor off, cursor blink off
+f43f 86 0c             LDAA
+0810             STAA    DISPC           ;
+f441 b7 c0 00             STAA
+0811             JSR     LCDWAIT         ;
+f444 bd f4 86             JSR
+0812             LDAA    #LCD_HOME       ; Clear all display and return cursor home
+f447 86 01             LDAA
+0813             STAA    DISPC           ;
+f449 b7 c0 00             STAA
+0814             LDAA    #2              ; Wait 2ms
+f44c 86 02             LDAA
+0815             JSR     DELAY_MS        ;
+f44e bd f4 04             JSR
+0816             JSR     LCDWAIT         ;
+f451 bd f4 86             JSR
+0817             LDAA    #LCD_CRSCFG     ; Increment cursor and don't shift display
+f454 86 06             LDAA
+0818             STAA    DISPC           ;
+f456 b7 c0 00             STAA
+0819             JSR     LCDWAIT         ;
+f459 bd f4 86             JSR
+0820             LDAA    #LCD_RAMADDR    ; Set DDRAM address to position 0.
+f45c 86 80             LDAA
+0821             STAA    DISPC           ;
+f45e b7 c0 00             STAA
+0822             JSR     LCDWAIT         ;
+f461 bd f4 86             JSR
+0823             PULA                    ; Restore A
+f464 32             PULA
+0824             RTS                     ; Done
+f465 39             RTS
+0825 
+0826 
+0827 ;; Write LCD string                       
+0828 ;; IN: X = NULL-terimated string to print 
+0829 ;;
+0830 LCDWRITES   PSHX                    ; Save X
+f466 3c LCDWRITES
+0831             PSHB                    ; Save B
+f467 37             PSHB
+0832 _LCDSTRLOOP LDAB    0,X             ; Get next character to be written
+f468 e6 00 _LCDSTRLOOP
+0833             BEQ     _LCDSTRDONE     ; If NULL terminator, done
+f46a 27 06             BEQ
+0834             JSR     LCDWRITEC       ; Write character to SCI
+f46c bd f4 75             JSR
+0835             INX                     ; Next character
+f46f 08             INX
+0836             BRA     _LCDSTRLOOP     ; Continue
+f470 20 f6             BRA
+0837 _LCDSTRDONE PULB                    ; Restore B
+f472 33 _LCDSTRDONE
+0838             PULX                    ; Restore X
+f473 38             PULX
+0839             RTS                     ; Done
+f474 39             RTS
+0840 
+0841 
+0842 ;; Write LCD character        
+0843 ;; IN: B = character to print 
+0844 ;; NOTE: CR & LF are filtered 
+0845 ;;
+0846 LCDWRITEC   PSHB                    ; Save B
+f475 37 LCDWRITEC
+0847             CMPB    #CR             ; Don't do CRs
+f476 c1 0d             CMPB
+0848             BEQ     _LCDWRTDONE     ;
+f478 27 0a             BEQ
+0849             CMPB    #LF             ; Don't do LFs
+f47a c1 0a             CMPB
+0850             BEQ     _LCDWRTDONE     ;
+f47c 27 06             BEQ
+0851             STAB    DISPD           ; Write character to display
+f47e f7 c0 01             STAB
+0852             JSR     LCDWAIT         ;
+f481 bd f4 86             JSR
+0853 _LCDWRTDONE PULB                    ; Restore B
+f484 33 _LCDWRTDONE
+0854             RTS                     ; Done
+f485 39             RTS
+0855 
+0856 
+0857 ;; LCD wait loop 
+0858 ;;
+0859 LCDWAIT     PSHA                    ; Save A
+f486 36 LCDWAIT
+0860 _LCDWTLOOP  LDAA    DISPC           ; Wait for LCD to process last request
+f487 b6 c0 00 _LCDWTLOOP
+0861             ANDA    #LCD_WAITFLG    ;
+f48a 84 80             ANDA
+0862             BNE     _LCDWTLOOP      ; Not ready to take new data
+f48c 26 f9             BNE
+0863             PULA                    ; Restore A
+f48e 32             PULA
+0864             RTS                     ; Done
+f48f 39             RTS
+0865 
+0866 
+0867 ;; SWI handler                         
+0868 ;; IN: A = command id to be executed   
+0869 ;;
+0870 SWIHDLR     PSHA                    ; Save A
+f490 36 SWIHDLR
+0871             PSHB                    ; Save B
+f491 37             PSHB
+0872             PSHX                    ; Save X
+f492 3c             PSHX
+0873             LDX     #APICMDTBL      ; Load API command table base
+f493 ce f8 a4             LDX
+0874             TAB                     ; Copy A -> B
+f496 16             TAB
+0875             LSLB                    ; Each offset is 2 bytes (multiply by 2)
+f497 58             LSLB
+0876             ABX                     ; Add B to X
+f498 3a             ABX
+0877             LDY     0,X             ; Get routine address
+f499 1a ee 00             LDY
+0878             PULX                    ; Restore X
+f49c 38             PULX
+0879             PULB                    ; Restore B
+f49d 33             PULB
+0880             PULA                    ; Restore A
+f49e 32             PULA
+0881             JSR     0,Y             ; Call API routine
+f49f 18 ad 00             JSR
+0882             RTI                     ; Done
+f4a2 3b             RTI
+0883 
+0884 
+0885 ;;  Text strings  
+0886 ;;
+0887 
+0888 ;; Welcome string
+0889 ;;
+0890 f4a3 0dWELCOMESTR  FCB CR
+0891 f4a4 0a            FCB LF
+0892 f4a5 36 38 4d 49 43 52 4f 20 56 65 72 20 30 2e 36             FCC "68MICRO Ver 0.6"
+0893 f4b4 0d            FCB CR
+0894 f4b5 0a            FCB LF
+0895 f4b6 00            FCB 0
+0896 
+0897 ;; Copyright string
+0898 ;;
+0899 f4b7 43 6f 70 79 72 69 67 68 74 20 28 63 29 20 32 30 32 36 2c 20 4a 65 66 66 20 47 6c 61 75 6d 2e 20 20 41 6c 6c 20 72 69 67 68 74 73 20 72 65 73 65 72 76 65 64 2e COPYRGHTSTR FCC "Copyright (c) 2026, Jeff Glaum.  All rights reserved."
+0900 f4ec 0d            FCB CR
+0901 f4ed 0a            FCB LF
+0902 f4ee 00            FCB 0
+0903 
+0904 ;; S-Record identifiers
+0905 ;;
+0906 f4ef 53 31 SREC_S1HDR  FCC "S1"
+0907 f4f1 00            FCB 0
+0908 
+0909 f4f2 53 39 SREC_S9HDR  FCC "S9"
+0910 f4f4 00            FCB 0
+0911 
+0912 ;; User commands
+0913 ;;
+0914 f4f5 64 75 6d 70 COMMANDS    FCC "dump"              ; 1
+0915 f4f9 00            FCB 0
+0916 f4fa 65 6e 74 65 72             FCC "enter"             ; 2
+0917 f4ff 00            FCB 0    
+0918 f500 67 6f             FCC "go"                ; 3
+0919 f502 00            FCB 0    
+0920 f503 73 72 65 63             FCC "srec"              ; 4
+0921 f507 00            FCB 0
+0922 f508 72 65 73 65 74             FCC "reset"             ; 5
+0923 f50d 00            FCB 0    
+0924 f50e 61 70 69             FCC "api"               ; 6
+0925 f511 00            FCB 0
+0926 f512 72 65 67 73             FCC "regs"              ; 7
+0927 f516 00            FCB 0
+0928 f517 68 65 6c 70             FCC "help"              ; 8
+0929 f51b 00            FCB 0    
+0930 f51c 3f             FCC "?"                 ; 9
+0931 f51d 00            FCB 0                   ; Must end in two NULLs
+0932 f51e 00            FCB 0
+0933 
+0934 f51f 0dDUMPSTR     FCB CR
+0935 f520 0a            FCB LF
+0936 f521 4d 65 6d 6f 72 79 20 63 6f 6e 74 65 6e 74 73 3a             FCC "Memory contents:"
+0937 f531 0d            FCB CR
+0938 f532 0a            FCB LF
+0939 f533 0d            FCB CR
+0940 f534 0a            FCB LF
+0941 f535 00            FCB 0
+0942 
+0943 f536 52 65 67 69 73 74 65 72 73 3a DUMPREGSSTR FCC "Registers:"
+0944 f540 0d            FCB CR
+0945 f541 0a            FCB LF
+0946 f542 0d            FCB CR
+0947 f543 0a            FCB LF
+0948 f544 00            FCB 0
+0949 
+0950 f545 41 3a 20 REGLABELA   FCC "A: "
+0951 f548 00            FCB 0
+0952 
+0953 f549 42 3a 20 REGLABELB   FCC "B: "
+0954 f54c 00            FCB 0
+0955 
+0956 f54d 49 58 3a 20 REGLABELIX  FCC "IX: "
+0957 f551 00            FCB 0
+0958 
+0959 f552 49 59 3a 20 REGLABELIY  FCC "IY: "
+0960 f556 00            FCB 0
+0961 
+0962 f557 53 50 3a 20 REGLABELSP  FCC "SP: "
+0963 f55b 00            FCB 0
+0964 
+0965 f55c 43 43 3a 20 REGLABELCC  FCC "CC: "
+0966 f560 00            FCB 0
+0967 
+0968 f561 0dENTERSTR    FCB CR
+0969 f562 0a            FCB LF
+0970 f563 49 6e 70 75 74 20 65 61 63 68 20 62 79 74 65 20 66 6f 6c 6c 6f 77 65 64 20 62 79 20 65 6e 74 65 72 2e 20 20 54 6f 20 66 69 6e 69 73 68 20 70 72 65 73 73 20 65 6e 74 65 72 20 74 77 69 63 65 2e             FCC "Input each byte followed by enter.  To finish press enter twice."
+0971 f5a3 0d            FCB CR
+0972 f5a4 0a            FCB LF
+0973 f5a5 00            FCB 0
+0974 
+0975 ;; Resonse strings
+0976 ;;
+0977 f5a6 49 6e 76 61 6c 69 64 20 63 6f 6d 6d 61 6e 64 UNKWNCMDSTR FCC "Invalid command"
+0978 f5b5 0d            FCB CR
+0979 f5b6 0a            FCB LF
+0980 f5b7 00            FCB 0
+0981 
+0982 ;; Resonse string
+0983 ;;
+0984 f5b8 3e 20 PROMPTSTR   FCC "> "
+0985 f5ba 00            FCB 0
+0986 0987 ;; Ready to receive string
+0988 ;;
+0989 f5bb 52 65 61 64 79 20 74 6f 20 72 65 63 65 69 76 65 20 73 2d 72 65 63 6f 72 64 20 64 61 74 61 20 66 72 6f 6d 20 68 6f 73 74 2e 2e 2e RECEIVESTR  FCC "Ready to receive s-record data from host..."
+0990 f5e6 0d            FCB CR
+0991 f5e7 0a            FCB LF
+0992 f5e8 00            FCB 0
+0993 
+0994 f5e9 4a 75 6d 70 69 6e 67 2e 2e 2e JUMPINGSTR  FCC "Jumping..."
+0995 f5f3 0d            FCB CR
+0996 f5f4 0a            FCB LF
+0997 f5f5 00            FCB 0
+0998 
+0999 f5f6 41 64 64 72 65 73 73 3a 20 GETADDRSTR  FCC "Address: "
+1000 f5ff 00            FCB 0
+1001 
+1002 f600 53 2d 72 65 63 6f 72 64 20 65 72 72 6f 72 21 SRECERRSTR  FCC "S-record error!"
+1003 f60f 00            FCB 0
+1004 
+1005 ;; Help text
+1006 ;;
+1007 f610 0dHELPTEXT    FCB CR
+1008 f611 0a            FCB LF
+1009 f612 43 6f 6d 6d 61 6e 64 73 3a             FCC "Commands:"
+1010 f61b 0d            FCB CR
+1011 f61c 0a            FCB LF
+1012 f61d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d 2d             FCC "----------------------------------------------"
+1013 f64b 0d            FCB CR
+1014 f64c 0a            FCB LF
+1015 f64d 64 75 6d 70 20 20 20 20 20 2d 20 64 69 73 70 6c 61 79 20 74 68 65 20 63 6f 6e 74 65 6e 74 73 20 6f 66 20 6d 65 6d 6f 72 79             FCC "dump     - display the contents of memory"
+1016 f676 0d            FCB CR
+1017 f677 0a            FCB LF
+1018 f678 65 6e 74 65 72 20 20 20 20 2d 20 77 72 69 74 65 20 64 61 74 61 20 74 6f 20 6d 65 6d 6f 72 79             FCC "enter    - write data to memory"
+1019 f697 0d            FCB CR
+1020 f698 0a            FCB LF
+1021 f699 67 6f 20 20 20 20 20 20 20 2d 20 65 78 65 63 75 74 65 20 63 6f 64 65 20 69 6e 20 6d 65 6d 6f 72 79             FCC "go       - execute code in memory"
+1022 f6ba 0d            FCB CR
+1023 f6bb 0a            FCB LF
+1024 f6bc 73 72 65 63 20 20 20 20 20 2d 20 64 6f 77 6e 6c 6f 61 64 20 26 20 65 78 65 63 75 74 65 20 73 2d 72 65 63 6f 72 64 20 66 69 6c 65             FCC "srec     - download & execute s-record file"
+1025 f6e7 0d            FCB CR
+1026 f6e8 0a            FCB LF
+1027 f6e9 61 70 69 20 20 20 20 20 20 2d 20 64 69 73 70 6c 61 79 20 70 75 62 6c 69 63 20 6d 6f 6e 69 74 6f 72 20 72 6f 75 74 69 6e 65 73             FCC "api      - display public monitor routines"
+1028 f713 0d            FCB CR
+1029 f714 0a            FCB LF
+1030 f715 72 65 67 73 20 20 20 20 20 2d 20 64 69 73 70 6c 61 79 20 72 65 67 69 73 74 65 72 20 76 61 6c 75 65 73             FCC "regs     - display register values"
+1031 f737 0d            FCB CR
+1032 f738 0a            FCB LF
+1033 f739 72 65 73 65 74 20 20 20 20 2d 20 72 65 73 65 74 20 74 68 65 20 73 79 73 74 65 6d             FCC "reset    - reset the system"
+1034 f754 0d            FCB CR
+1035 f755 0a            FCB LF
+1036 f756 00            FCB 0
+1037 
+1038 1039 f757 0d            FCB CR
+1040 f758 0a            FCB LF
+1041 f759 30 31 3a 20 41 53 43 49 49 32 48 45 58             FCC "01: ASCII2HEX"
+1042 f766 0d            FCB CR
+1043 f767 0a            FCB LF
+1044 f768 30 32 3a 20 43 4c 45 41 52 49 4e 50 55 54             FCC "02: CLEARINPUT"
+1045 f776 0d            FCB CR
+1046 f777 0a            FCB LF
+1047 f778 30 33 3a 20 44 45 4c 41 59 5f 4d 53             FCC "03: DELAY_MS"
+1048 f784 0d            FCB CR
+1049 f785 0a            FCB LF
+1050 f786 30 34 3a 20 4c 43 44 43 4c 45 41 52             FCC "04: LCDCLEAR"
+1051 f792 0d            FCB CR
+1052 f793 0a            FCB LF
+1053 f794 30 35 3a 20 4c 43 44 49 4e 49 54             FCC "05: LCDINIT"
+1054 f79f 0d            FCB CR
+1055 f7a0 0a            FCB LF
+1056 f7a1 30 36 3a 20 4c 43 44 57 41 49 54             FCC "06: LCDWAIT"
+1057 f7ac 0d            FCB CR
+1058 f7ad 0a            FCB LF
+1059 f7ae 30 37 3a 20 4c 43 44 57 52 49 54 45 43             FCC "07: LCDWRITEC"
+1060 f7bb 0d            FCB CR
+1061 f7bc 0a            FCB LF
+1062 f7bd 30 38 3a 20 4c 43 44 57 52 49 54 45 53             FCC "08: LCDWRITES"
+1063 f7ca 0d            FCB CR
+1064 f7cb 0a            FCB LF
+1065 f7cc 30 39 3a 20 4f 55 54 4c 45 46 54 48             FCC "09: OUTLEFTH"
+1066 f7d8 0d            FCB CR
+1067 f7d9 0a            FCB LF
+1068 f7da 30 41 3a 20 4f 55 54 52 49 47 48 54 48             FCC "0A: OUTRIGHTH"
+1069 f7e7 0d            FCB CR
+1070 f7e8 0a            FCB LF
+1071 f7e9 30 42 3a 20 53 45 52 43 4c 45 41 52             FCC "0B: SERCLEAR"
+1072 f7f5 0d            FCB CR
+1073 f7f6 0a            FCB LF
+1074 f7f7 30 43 3a 20 53 45 52 49 4e 49 54             FCC "0C: SERINIT"
+1075 f802 0d            FCB CR
+1076 f803 0a            FCB LF
+1077 f804 30 44 3a 20 53 45 52 50 52 54 42 59 54 45             FCC "0D: SERPRTBYTE"
+1078 f812 0d            FCB CR
+1079 f813 0a            FCB LF
+1080 f814 30 45 3a 20 53 45 52 50 52 54 43 52             FCC "0E: SERPRTCR"
+1081 f820 0d            FCB CR
+1082 f821 0a            FCB LF
+1083 f822 30 46 3a 20 53 45 52 50 52 54 53 50 43             FCC "0F: SERPRTSPC"
+1084 f82f 0d            FCB CR
+1085 f830 0a            FCB LF
+1086 f831 31 30 3a 20 53 45 52 52 45 41 44 43             FCC "10: SERREADC"
+1087 f83d 0d            FCB CR
+1088 f83e 0a            FCB LF
+1089 f83f 31 31 3a 20 53 45 52 52 45 41 44 43 78             FCC "11: SERREADCx"
+1090 f84c 0d            FCB CR
+1091 f84d 0a            FCB LF
+1092 f84e 31 32 3a 20 53 45 52 52 45 41 44 52 41 57             FCC "12: SERREADRAW"
+1093 f85c 0d            FCB CR
+1094 f85d 0a            FCB LF
+1095 f85e 31 33 3a 20 53 45 52 52 45 41 44 53             FCC "13: SERREADS"
+1096 f86a 0d            FCB CR
+1097 f86b 0a            FCB LF
+1098 f86c 31 34 3a 20 53 45 52 57 52 49 54 45 43             FCC "14: SERWRITEC"
+1099 f879 0d            FCB CR
+1100 f87a 0a            FCB LF
+1101 f87b 31 35 3a 20 53 45 52 57 52 49 54 45 53             FCC "15: SERWRITES"
+1102 f888 0d            FCB CR
+1103 f889 0a            FCB LF
+1104 f88a 31 36 3a 20 53 54 52 43 4d 50             FCC "16: STRCMP"
+1105 f894 0d            FCB CR
+1106 f895 0a            FCB LF
+1107 f896 31 37 3a 20 54 4f 55 50 50 45 52             FCC "17: TOUPPER"
+1108 f8a1 0d            FCB CR
+1109 f8a2 0a            FCB LF
+1110 f8a3 00            FCB 0
+1111 
+1112 
+1113 ;; Monitor command table
+1114 ;;
+1115 APICMDTBL   EQU *
+1116 f8a4 0000            FDB 0000            ; 00
+1117 f8a6 f280            FDB ASCII2HEX       ; 01
+1118 f8a8 f043            FDB CLEARINPUT      ; 02
+1119 f8aa f404            FDB DELAY_MS        ; 03
+1120 f8ac f3f9            FDB LCDCLEAR        ; 04
+1121 f8ae f415            FDB LCDINIT         ; 05
+1122 f8b0 f486            FDB LCDWAIT         ; 06 
+1123 f8b2 f475            FDB LCDWRITEC       ; 07 
+1124 f8b4 f466            FDB LCDWRITES       ; 08 
+1125 f8b6 f38c            FDB OUTLEFTH        ; 09
+1126 f8b8 f390            FDB OUTRIGHTH       ; 0A
+1127 f8ba f034            FDB SERCLEAR        ; 0B
+1128 f8bc f04c            FDB SERINIT         ; 0C
+1129 f8be f39e            FDB SERPRTBYTE      ; 0D
+1130 f8c0 f3b5            FDB SERPRTCR        ; 0E
+1131 f8c2 f3c2            FDB SERPRTSPC       ; 0F
+1132 f8c4 f0d3            FDB SERREADC        ; 10
+1133 f8c6 f0e5            FDB SERREADCx       ; 11
+1134 f8c8 f0b0            FDB SERREADRAW      ; 12
+1135 f8ca f07a            FDB SERREADS        ; 13
+1136 f8cc f06d            FDB SERWRITEC       ; 14
+1137 f8ce f05e            FDB SERWRITES       ; 15
+1138 f8d0 f3ca            FDB STRCMP          ; 16
+1139 f8d2 f275            FDB TOUPPER         ; 17
+1140 
+1141 
+1142 ;; Interrupt vectors 
+1143 ;;
+1144             ORG $FFF6           ; SWI Vector
+1145 fff6 f490_SWI_VECT   FDB SWIHDLR 
+1146 
+1147             ORG $FFFE           ; Reset vector
+1148 fffe f000_RESET_VECT FDB WEEZER
+1149 

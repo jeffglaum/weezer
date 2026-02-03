@@ -6,53 +6,53 @@
 ;;  ------------------------------------------------------------------
 ;;  0.4		2012-Mar-10	Clean-up & bug fixes
 ;;  0.5		2012-Mar-18	Added suppport for dump, enter, regs
-;;                               (tested on MC68HC11 simulator)
+;;                        (tested on MC68HC11 simulator)
 ;;
 ;;
 ;;   Memory Map:
 ;;
 ;;	$0000	+---------------+
-;;              |  256 bytes	|
-;;              |  on-chip RAM	| <- Stack (lower) & Monitor variables (upper)
+;;          |  256 bytes	|
+;;          |  on-chip RAM	| <- Stack (lower) & Monitor variables (upper)
 ;;	$00FF	+---------------+
-;;              |               |
-;;              |    Unused     |
+;;          |               |
+;;          |    Unused     |
 ;;	$1000	+---------------+
-;;              |   96 bytes	|
-;;              |   registers	|
+;;          |   96 bytes	|
+;;          |   registers	|
 ;;	$105F	+---------------+
-;;              |               |
-;;              |               |
-;;              |               |
-;;              |    Unused     |
-;;              |               |
-;;      $C000   +---------------+
-;;              | LCD registers |
-;;              +---------------+
-;;              |               |
-;;              |               |
+;;          |               |
+;;          |               |
+;;          |               |
+;;          |    Unused     |
+;;          |               |
+;;  $C000   +---------------+
+;;          | LCD registers |
+;;          +---------------+
+;;          |               |
+;;          |               |
 ;;	$D000	+---------------+
-;;              |               |
-;;              |  8192 bytes	|
-;;              | off-chip RAM	| <- Free program memory
-;;              |               |
-;;              |               |
+;;          |               |
+;;          |  8192 bytes	|
+;;          | off-chip RAM	| <- Free program memory
+;;          |               |
+;;          |               |
 ;;	$F000	+---------------+
-;;              |               |
-;;              |  4096 bytes	|
-;;              | off-chip ROM	| <- Boot code and interrupt vectors
-;;              |               |
-;;              |               |
+;;          |               |
+;;          |  4096 bytes	|
+;;          | off-chip ROM	| <- Boot code and interrupt vectors
+;;          |               |
+;;          |               |
 ;;	$FFFF	+---------------+
 ;;
 
 
-;; Addresses
+;; Program Addresses
 ;;
 STACK_BASE  EQU     $80     ; Stack pointer base
 PROGRAM_RAM EQU     $D000   ; Start of program RAM (free memory)
 
-;; Serial Registers
+;; Serial UART Registers
 ;;
 BAUD        EQU     $102B   ; SCI BAUD register
 SCCR1       EQU     $102C   ; SCI control register #1
@@ -98,8 +98,8 @@ SRECHDR_S9  EQU     2       ; S9 (jump address) record
 ;; Memory Variables 
 ;;
             ORG     $90
-INBUFF      RMB     $50     ; Input buffer
-INBUFFLEN   RMB     $1      ; Input buffer length
+INBUFF      RMB     $50     ; CLI Input buffer
+INBUFFLEN   RMB     $1      ; CLI Input buffer length
 TEMP        RMB     $1      ; Temporary variable
 SRECADDR    RMB     $2      ; Current line's S-Record address
 
@@ -107,30 +107,30 @@ SRECADDR    RMB     $2      ; Current line's S-Record address
 ;; Main routine
 ;;
             ORG     $F000           ; Locate program at $F000
-_WEEZER     LDS     #STACK_BASE     ; Locate stack pointer
-            JSR     _SERINIT        ; Initialize SCI port
-            JSR     _LCDINIT        ; Initialize LCD display
+WEEZER      LDS     #STACK_BASE     ; Locate stack pointer
+            JSR     SERINIT         ; Initialize SCI port
+            JSR     LCDINIT         ; Initialize LCD display
             LDX     #WELCOMESTR     ; Display welcome string
-            JSR     _SERWRITES      ;  * serial port
-            JSR     _LCDWRITES      ;  * LCD
+            JSR     SERWRITES       ;  * serial port
+            JSR     LCDWRITES       ;  * LCD
             LDX     #COPYRGHTSTR    ; Display copyright string
-            JSR     _SERWRITES      ;  * serial port
-            JSR     _SERCLEAR       ; Clear SCI input register
+            JSR     SERWRITES       ;  * serial port
+            JSR     SERCLEAR        ; Clear SCI input register
             CLI                     ; Enable interrupts
 _PROMPT     LDX     #PROMPTSTR      ; Display input prompt
-            JSR     _SERWRITES      ;  * serial port
-            JSR     _CLEARINPUT     ; Clear input string buffer and length
-            JSR     _SERREADS       ; Get user's input
-            JSR     _PARSECMDS      ; Determine command specified
+            JSR     SERWRITES       ;  * serial port
+            JSR     CLEARINPUT      ; Clear input string buffer and length
+            JSR     SERREADS        ; Get user's input
+            JSR     PARSECMDS       ; Determine command specified
             CMPA    #0              ; If command not found - don't execute
             BEQ     _PROMPT         ;
-            JSR     _EXECUTECMD     ; Execute command
+            JSR     EXECUTECMD      ; Execute command
             BRA     _PROMPT         ;
 
 
 ;; Read SCI receive buffer until empty 
 ;;
-_SERCLEAR   PSHA
+SERCLEAR    PSHA
 _SERCLR1    LDAA    SCSR
             ANDA    #$20
             BEQ     _SERCLRDONE
@@ -142,7 +142,7 @@ _SERCLRDONE PULA
             
 ;; Clear command input string 
 ;;
-_CLEARINPUT PSHA                    ; Save A
+CLEARINPUT  PSHA                    ; Save A
             LDAA    #0              ;
             STAA    INBUFF          ; Clear (terminate) input buffer
             STAA    INBUFFLEN       ; Zero input buffer length
@@ -152,7 +152,7 @@ _CLEARINPUT PSHA                    ; Save A
 
 ;; Initialize serial port 
 ;;
-_SERINIT    PSHA                    ; Save A
+SERINIT     PSHA                    ; Save A
             LDAA    #BAUD_RATE      ; Set baud rate to 9600 (8 MHz xtal)
             STAA    BAUD            ;
             LDAA    #0              ; Clear SCCR1 (1 start, 8 data, 1 stop)
@@ -166,11 +166,11 @@ _SERINIT    PSHA                    ; Save A
 ;; Write serial port string                
 ;; IN: X = NULL-terminated string to print 
 ;;
-_SERWRITES  PSHX                    ; Save X
+SERWRITES   PSHX                    ; Save X
             PSHB                    ; Save B
 _SERSTRLOOP LDAB    0,X             ; Get next character to be transmitted
             BEQ     _SERSTRDONE     ; If NULL terminator, done
-            JSR     _SERWRITEC      ; Write character to SCI
+            JSR     SERWRITEC       ; Write character to SCI
             INX                     ; Next character
             BRA     _SERSTRLOOP     ; Continue
 _SERSTRDONE PULB                    ; Restore B
@@ -181,7 +181,7 @@ _SERSTRDONE PULB                    ; Restore B
 ;; Write serial port character 
 ;; IN: B = character to print  
 ;;
-_SERWRITEC  PSHA                    ; Save A
+SERWRITEC   PSHA                    ; Save A
 _SERCHRWAIT LDAA    SCSR            ; Transmit register empty?
             ANDA    #TDRE           ;
             BEQ     _SERCHRWAIT     ;
@@ -193,10 +193,10 @@ _SERCHRWAIT LDAA    SCSR            ; Transmit register empty?
 ;; Read string from serial port                                           
 ;; OUT: INBUFF & INBUFFLEN contain the received data (CR or LF end input) 
 ;;
-_SERREADS   PSHA                    ; Save A
+SERREADS    PSHA                    ; Save A
             PSHB                    ; Save B
             PSHX                    ; Save X
-_SERREAD1   JSR     _SERREADC       ; Read character from SCI
+_SERREAD1   JSR     SERREADC        ; Read character from SCI
             CMPA    #BS             ; Backspace - delete last character
             BEQ     _SERBKSPACE     ;
             CMPA    #CR             ; Carriage return - NULL terminate string
@@ -229,13 +229,13 @@ _SERRDDONE  PULX                    ; Restore X
 ;; Read raw input from the serial port 
 ;; IN: B = number of chars to read
 ;;
-_SERREADRAW PSHA                    ; Save A
+SERREADRAW  PSHA                    ; Save A
             PSHB                    ; Save B
             PSHX                    ; Save X
             LDX     #INBUFF         ; Get input buffer
 _SERREADR1  CMPB    #0              ; No more characters to read?
             BEQ     _SERREADDN      ;
-            JSR     _SERREADCx      ; Read byte from SCI (no echo)
+            JSR     SERREADCX       ; Read byte from SCI (no echo)
             CMPA    #LF             ; Line-feed return - ignore
             BEQ     _SERREADR1      ;
             CMPA    #CR             ; Carriage return - ignore
@@ -255,23 +255,23 @@ _SERREADDN  LDAA    #0              ; Terminate the string
 ;; Read character from serial port  
 ;; OUT: A = character read from SCI
 ;;
-_SERREADC  PSHB                    ; Save B
+SERREADC   PSHB                    ; Save B
 _SERREADC1 LDAA    SCSR            ; Check for received character
            ANDA    #$20            ;
            BEQ     _SERREADC1      ; No characters - wait
            LDAA    SCDR            ;
            PSHA                    ; Copy A -> B
            PULB                    ;
-           JSR     _SERWRITEC      ; Echo character to remote console
+           JSR     SERWRITEC       ; Echo character to remote console
            PULB                    ; Restore B
            RTS                     ; Done
 
 ;; Read character from serial port (no echo)
 ;; OUT: A = character read from SCI        
 ;;
-_SERREADCx LDAA    SCSR            ; Check for received character
+SERREADCX LDAA     SCSR            ; Check for received character
            ANDA    #$20            ;
-           BEQ     _SERREADCx      ; No characters - wait
+           BEQ     SERREADCX      ; No characters - wait
            LDAA    SCDR            ;
            RTS                     ; Done
 
@@ -280,17 +280,17 @@ _SERREADCx LDAA    SCSR            ; Check for received character
 ;; INTX X = NULL-terminated command string
 ;; OUT: A = command index number          
 ;;
-_PARSECMDS  PSHB                    ; Save B
+PARSECMDS   PSHB                    ; Save B
             PSHX                    ; Save X
             PSHY                    ; Save Y
-            JSR     _SERPRTCR       ; Start a newline
+            JSR     SERPRTCR        ; Start a newline
             LDAB    #1              ; Initialize command array counter
             LDX     #INBUFF         ; Load pointer to input buffer string
             LDAA    0,X             ;
             CMPA    #0              ; If it's an empty string, exit
             BEQ     _PARSEDONE      ;
             LDY     #COMMANDS       ; Load pointer to command array string
-_EXECLOOP   JSR     _STRCMP         ; Compare command strings
+_EXECLOOP   JSR     STRCMP          ; Compare command strings
             CMPA    #0              ;
             BEQ     _FOUNDCMD       ; Found command (command number in B)
             INCB                    ; Increment command array counter
@@ -305,7 +305,7 @@ _FOUNDCMD   PSHB                    ; Copy B -> A
             PULA                    ;
             BRA     _PARSEDONE      ; 
 _BADCMD     LDX     #UNKWNCMDSTR    ; Load invalid command string text
-            JSR     _SERWRITES      ; Write message to serial port
+            JSR     SERWRITES       ; Write message to serial port
             LDAA    #0              ; Bad command id
 _PARSEDONE  PULY                    ; Restore Y
             PULX                    ; Restore X
@@ -316,7 +316,7 @@ _PARSEDONE  PULY                    ; Restore Y
 ;; Dispatch to chosen command
 ;; IN: A = Command id        
 ;;
-_EXECUTECMD PSHA                    ; Save A
+EXECUTECMD  PSHA                    ; Save A
             PSHB                    ; Save B
             PSHX                    ; Save X
             CMPA    #1              ; #1: Dump
@@ -338,26 +338,26 @@ _EXECUTECMD PSHA                    ; Save A
             CMPA    #9              ; #8: ?
             BEQ     _CMD9           ;
             LDX     #UNKWNCMDSTR    ; Invalid command
-            JSR     _SERWRITES      ;
+            JSR     SERWRITES       ;
             BRA     _CMDDISPDN      ;
-_CMD1       JSR     _DUMPMEM        ; Dump memory contents
+_CMD1       JSR     DUMPMEM         ; Dump memory contents
             BRA     _CMDDISPDN      ;
-_CMD2       JSR     _ENTERMEM       ; Enter memory contents
+_CMD2       JSR     ENTERMEM        ; Enter memory contents
             BRA     _CMDDISPDN      ;
-_CMD3       JSR     _JUMPTO         ; Go
+_CMD3       JSR     JUMPTO          ; Go
             BRA     _CMDDISPDN      ;
-_CMD4       JSR     _SRECDOWNLD     ; Download & execute S-Record code
+_CMD4       JSR     SRECDOWNLD      ; Download & execute S-Record code
             BRA     _CMDDISPDN      ;
-_CMD5       JSR     _WEEZER         ; Reset
+_CMD5       JSR     WEEZER          ; Reset
             BRA     _CMDDISPDN      ;
 _CMD6       LDX     #APIRTNSTXT     ; Monitor routines list
-            JSR     _SERWRITES      ;
+            JSR     SERWRITES       ;
             BRA     _CMDDISPDN      ;
-_CMD7       JSR     _DUMPREGS       ; Registers
+_CMD7       JSR     DUMPREGS        ; Registers
             BRA     _CMDDISPDN      ;
 _CMD8       NOP                     ;
 _CMD9       LDX     #HELPTEXT       ; ?/Help
-            JSR     _SERWRITES      ;
+            JSR     SERWRITES       ;
 _CMDDISPDN  PULX                    ; Restore X
             PULB                    ; Restore B
             PULA                    ; Restore A
@@ -366,27 +366,27 @@ _CMDDISPDN  PULX                    ; Restore X
 
 ;; S-Record download & execute 
 ;;
-_SRECDOWNLD PSHA                    ; Save A
+SRECDOWNLD  PSHA                    ; Save A
             PSHB                    ; Save B
             PSHX                    ; Save X
             PSHY                    ; Save Y
             LDX     #RECEIVESTR     ; Load receive string for display
-            JSR     _SERWRITES      ; Write string to serial port
+            JSR     SERWRITES       ; Write string to serial port
 _SRECGETLN  LDAB    #2              ; Read the first two characters (Sn header)
-            JSR     _SERREADRAW     ;
+            JSR     SERREADRAW      ;
             LDX     #INBUFF         ; Load pointer to S-Record line
             LDY     #SREC_S1HDR     ; Load pointer to S1 header string
-            JSR     _STRCMP         ; Compare command strings
+            JSR     STRCMP          ; Compare command strings
             CMPA    #0              ;
             BEQ     _FOUNDS1HDR     ; Found S1 header
             LDY     #SREC_S9HDR     ; Load pointer to S9 header string
-            JSR     _STRCMP         ; Compare command strings
+            JSR     STRCMP          ; Compare command strings
             CMPA    #0              ;
             BEQ     _FOUNDS9HDR     ; Found S9 header
             LDX     #SRECERRSTR     ; ERROR: unrecognized S-Record header
-            JSR     _LCDCLEAR       ; Clear the LCD display
-            JSR     _LCDWRITES      ; Write string to serial port
-            JSR     _SERWRITES      ; Write string to serial port
+            JSR     LCDCLEAR        ; Clear the LCD display
+            JSR     LCDWRITES       ; Write string to serial port
+            JSR     SERWRITES       ; Write string to serial port
             BRA     _SRECDONE       ;
 _FOUNDS1HDR LDAA    #SRECHDR_S1     ; Keep track of the current line type (S1)
             PSHA                    ;
@@ -394,16 +394,16 @@ _FOUNDS1HDR LDAA    #SRECHDR_S1     ; Keep track of the current line type (S1)
 _FOUNDS9HDR LDAA    #SRECHDR_S9     ; Keep track of the current line type (S9)
             PSHA                    ;
 _SRECCOMMON LDAB    #2              ; Get the number of remaining bytes in the line
-            JSR     _SERREADRAW     ;
-            JSR     _ASCII2HEX      ; Convert ASCII byte count to hex (result in A)
+            JSR     SERREADRAW      ;
+            JSR     ASCII2HEX       ; Convert ASCII byte count to hex (result in A)
             PSHA                    ; Save number of bytes
 _SRECADDR   LDAB    #4              ; Get the address
-            JSR     _SERREADRAW     ;
-            JSR     _ASCII2HEX      ; Convert ASCII addrH to hex (result in A)
+            JSR     SERREADRAW      ;
+            JSR     ASCII2HEX       ; Convert ASCII addrH to hex (result in A)
             TAB                     ; A (addrH) -> B
             INX                     ; Index to the address Low field
             INX                     ;
-            JSR     _ASCII2HEX      ; Convert ASCII addrL to hex (result in A)
+            JSR     ASCII2HEX       ; Convert ASCII addrL to hex (result in A)
             PSHA                    ; Push AddrL onto stack
             PSHB                    ; Push AddrH onto stack
             PULY                    ; Pull AddrH & AddrL (16-bits) into Y
@@ -416,10 +416,10 @@ _SRECADDR   LDAB    #4              ; Get the address
             BEQ     _SRECCHK        ;
             PSHB                    ; Save byte count
             LSLB                    ; x2 since each byte is two characters
-            JSR     _SERREADRAW     ; Read the S-Record data bytes
+            JSR     SERREADRAW      ; Read the S-Record data bytes
             PULB                    ; Retrieve byte count
             LDX     #INBUFF         ; Load pointer to start of S-Record line
-_STORESREC  JSR     _ASCII2HEX      ; Convert ASCII byte to hex (result in A)
+_STORESREC  JSR     ASCII2HEX       ; Convert ASCII byte to hex (result in A)
             STAA    0,Y             ; Store the converted byte value
             INX                     ;
             INX                     ;
@@ -427,7 +427,7 @@ _STORESREC  JSR     _ASCII2HEX      ; Convert ASCII byte to hex (result in A)
             DECB                    ; Decrement the byte count
             BNE     _STORESREC      ; Continue until we're finished
 _SRECCHK    LDAB    #2              ; Read the S-Record checksum byte
-            JSR     _SERREADRAW     ; 
+            JSR     SERREADRAW      ; 
 ;;
 ;; NOTE: we're ignoring the checksum - may want to fix this in the future.
 ;;
@@ -435,7 +435,7 @@ _SRECCHK    LDAB    #2              ; Read the S-Record checksum byte
             CMPA    #SRECHDR_S1     ; Is it an S1 header?  If so, there's more to read...
             BEQ     _SRECGETLN      ; Found S1 header, continue reading.
 _SRECLASTLN LDX     #JUMPINGSTR     ; Load jumping string for display
-            JSR     _SERWRITES      ; Write string to serial port
+            JSR     SERWRITES       ; Write string to serial port
             LDY     SRECADDR        ; Recall the last address (should be S9 jump address)
             JSR     0,Y             ; Jump to the address in Y
 _SRECDONE   PULY                    ; Restore Y
@@ -446,32 +446,32 @@ _SRECDONE   PULY                    ; Restore Y
 
 ;; Enter memory            
 ;;
-_ENTERMEM   PSHA                    ; Save A
+ENTERMEM   PSHA                    ; Save A
             PSHB                    ; Save B
             PSHX                    ; Save X
             PSHY                    ; Save Y
             LDX     #GETADDRSTR     ; Prompt for address
-            JSR     _SERWRITES      ;
-            JSR     _CLEARINPUT     ;
-            JSR     _SERREADS       ;
+            JSR     SERWRITES       ;
+            JSR     CLEARINPUT      ;
+            JSR     SERREADS        ;
             LDX     #INBUFF         ; Get a pointer to the input buffer
-            JSR     _ASCII2HEX      ; Convert ASCII addrH to hex (result in A)
+            JSR     ASCII2HEX       ; Convert ASCII addrH to hex (result in A)
             TAB                     ; A (addrH) -> B
             INX                     ; Index to the address Low field
             INX                     ;
-            JSR     _ASCII2HEX      ; Convert ASCII addrL to hex (result in A)
+            JSR     ASCII2HEX       ; Convert ASCII addrL to hex (result in A)
             PSHA                    ; Push AddrL onto stack
             PSHB                    ; Push AddrH onto stack
             PULY                    ; Pull AddrH & AddrL (16-bits) into Y
             LDX     #ENTERSTR       ; Display enter data string
-            JSR     _SERWRITES      ;
-_ENTERLOOP  JSR     _CLEARINPUT     ; Clear input buffer and length
-            JSR     _SERREADS       ; Read serial string (i.e. byte text)
-            JSR     _SERPRTCR       ; Print CR to SCI
+            JSR     SERWRITES       ;
+_ENTERLOOP  JSR     CLEARINPUT      ; Clear input buffer and length
+            JSR     SERREADS        ; Read serial string (i.e. byte text)
+            JSR     SERPRTCR        ; Print CR to SCI
             LDX     #INBUFF         ; Check for 0 (indicating done)
             LDAA    0,X             ;
             BEQ     _ENTERDONE      ;
-            JSR     _ASCII2HEX      ; Convert ASCII byte to hex
+            JSR     ASCII2HEX       ; Convert ASCII byte to hex
             STAA    0,Y             ; Store data byte
             INY                     ;
             BRA     _ENTERLOOP      ; Continue with input stream
@@ -484,20 +484,20 @@ _ENTERDONE  PULY                    ; Restore Y
 
 ;; Get input buffer address 
 ;;
-_GETINBADDR LDX     #INBUFF
+GETINBADDR  LDX     #INBUFF
             RTS
 
 
 ;; Get input buffer address 
 ;;
-_GETINBLEN  LDX     #INBUFFLEN
+GETINBLEN   LDX     #INBUFFLEN
             RTS
 
 
 ;; Convert text to upper case   
 ;; IN: A = character to convert
 ;;
-_TOUPPER    CMPA    #'a'            ; If ASCII digit isn't a character, skip
+TOUPPER     CMPA    #'a'            ; If ASCII digit isn't a character, skip
             BLO     _UPCASEDONE     ;
             CMPA    #'z'            ;
             BHI     _UPCASEDONE     ;
@@ -509,9 +509,9 @@ _UPCASEDONE RTS                     ; Done
 ;; IN:  LDX = input string (two digits)
 ;; OUT: A   = converted byte value    
 ;;
-_ASCII2HEX  PSHX                    ; Save X
+ASCII2HEX   PSHX                    ; Save X
             LDAA    0,X             ;
-            JSR     _TOUPPER        ; If character, convert to uppercase
+            JSR     TOUPPER         ; If character, convert to uppercase
             CMPA    #$41            ; Is digit a character?
             BLO     _ISNUMBER       ; No - assume number
 _ISALPHA    SUBA    #$37            ; Convert character to hex value
@@ -525,7 +525,7 @@ _ASCII1     ANDA    #$0F            ; Mask upper nibble bits
             STAA    TEMP            ; Save number in temporary variable
 _NEXTDIGIT  INX                     ; Move to second digit
             LDAA    0,X             ;
-            JSR     _TOUPPER        ; If character, convert to uppercase
+            JSR     TOUPPER         ; If character, convert to uppercase
             CMPA    #$41            ; Is digit a character?
             BLO     _ISNUMBER2      ; No - assume number
 _ISALPHA2   SUBA    #$37            ; Convert character to hex value
@@ -539,19 +539,19 @@ _ASCII2     ANDA    #$0F            ; Mask upper nibble bits
 
 ;; Jump to specified address (prompted) 
 ;;
-_JUMPTO     PSHA                    ; Save A
+JUMPTO      PSHA                    ; Save A
             PSHB                    ; Save B
             PSHX                    ; Save X
             LDX     #GETADDRSTR     ; Prompt for address
-            JSR     _SERWRITES      ;
-            JSR     _CLEARINPUT     ;
-            JSR     _SERREADS       ;
+            JSR     SERWRITES       ;
+            JSR     CLEARINPUT      ;
+            JSR     SERREADS        ;
             LDX     #INBUFF         ; Get a pointer to the input buffer
-            JSR     _ASCII2HEX      ; Convert ASCII addrH to hex (result in A)
+            JSR     ASCII2HEX       ; Convert ASCII addrH to hex (result in A)
             TAB                     ; A (addrH) -> B
             INX                     ; Index to the address Low field
             INX                     ;
-            JSR     _ASCII2HEX      ; Convert ASCII addrL to hex (result in A)
+            JSR     ASCII2HEX       ; Convert ASCII addrL to hex (result in A)
             PSHA                    ; Push AddrL onto stack
             PSHB                    ; Push AddrH onto stack
             PULY                    ; Pull AddrH & AddrL (16-bits) into Y
@@ -565,53 +565,53 @@ _JUMPTO     PSHA                    ; Save A
 ;; Dump registers 
 ;;
 ;;
-_DUMPREGS   PSHA                    ; Save A
+DUMPREGS    PSHA                    ; Save A
             PSHB                    ; Save B
             PSHX                    ; Save X
             PSHY                    ; Save Y
             PSHX                    ;
             LDX     #DUMPREGSSTR    ; Dump registers title
-            JSR     _SERWRITES      ;
+            JSR     SERWRITES       ;
             LDX     #REGLABELA      ; Register A label
-            JSR     _SERWRITES      ;
-            JSR     _SERPRTSPC      ; 
+            JSR     SERWRITES       ;
+            JSR     SERPRTSPC       ; 
             PSHB                    ;
             TAB                     ;
-            JSR     _SERPRTBYTE     ; A value
-            JSR     _SERPRTCR       ; 
+            JSR     SERPRTBYTE      ; A value
+            JSR     SERPRTCR        ; 
             LDX     #REGLABELB      ; Register B label
-            JSR     _SERWRITES      ;
-            JSR     _SERPRTSPC      ; 
+            JSR     SERWRITES       ;
+            JSR     SERPRTSPC       ; 
             PULB                    ;
-            JSR     _SERPRTBYTE     ; B value
-            JSR     _SERPRTCR       ; 
+            JSR     SERPRTBYTE      ; B value
+            JSR     SERPRTCR        ; 
             LDX     #REGLABELIX     ; Register IX label
-            JSR     _SERWRITES      ;
+            JSR     SERWRITES       ;
             PULA                    ; Pull top of 16-bit register X into A
             PULB                    ; Pull bottom of 16-bit register X into B
-            JSR     _SERPRTWORD     ; IX value
-            JSR     _SERPRTCR       ; 
+            JSR     SERPRTWORD      ; IX value
+            JSR     SERPRTCR        ; 
             PSHY                    ;
             LDX     #REGLABELIY     ; Register IY label
-            JSR     _SERWRITES      ;
+            JSR     SERWRITES       ;
             PULA                    ; Pull top of 16-bit register Y into A
             PULB                    ; Pull bottom of 16-bit register Y into B
-            JSR     _SERPRTWORD     ; IY value
-            JSR     _SERPRTCR       ; 
+            JSR     SERPRTWORD      ; IY value
+            JSR     SERPRTCR        ; 
             LDX     #REGLABELSP     ; Register SP label
-            JSR     _SERWRITES      ;
+            JSR     SERWRITES       ;
             TSX                     ; Move SP into IX
             XGDX                    ; Exchange D and IX
-            JSR     _SERPRTWORD     ; SP value
-            JSR     _SERPRTCR       ; 
+            JSR     SERPRTWORD      ; SP value
+            JSR     SERPRTCR        ; 
             XGDX                    ; Exchange D and IX back again
             LDX     #REGLABELCC     ; Register CC label
-            JSR     _SERWRITES      ;
+            JSR     SERWRITES       ;
             TPA                     ; Move CC into A
             TAB                     ; Move A into B
-            JSR     _SERPRTBYTE     ; B value
-            JSR     _SERPRTCR       ; 
-            JSR     _SERPRTCR       ; 
+            JSR     SERPRTBYTE      ; B value
+            JSR     SERPRTCR        ; 
+            JSR     SERPRTCR        ; 
             PULY                    ;
             PULX                    ;
             PULB                    ;
@@ -621,35 +621,35 @@ _DUMPREGS   PSHA                    ; Save A
 
 ;; Dump memory contents    
 ;;
-_DUMPMEM    PSHA                    ; Save A
+DUMPMEM     PSHA                    ; Save A
             PSHB                    ; Save B
             PSHX                    ; Save X
             LDX     #GETADDRSTR     ; Prompt for address
-            JSR     _SERWRITES      ;
-            JSR     _CLEARINPUT     ;
-            JSR     _SERREADS       ;
+            JSR     SERWRITES       ;
+            JSR     CLEARINPUT      ;
+            JSR     SERREADS        ;
             LDX     #INBUFF         ; Get a pointer to the input buffer
-            JSR     _ASCII2HEX      ; Convert ASCII addrH to hex (result in A)
+            JSR     ASCII2HEX       ; Convert ASCII addrH to hex (result in A)
             TAB                     ; A (addrH) -> B
             INX                     ; Index to the address Low field
             INX                     ;
-            JSR     _ASCII2HEX      ; Convert ASCII addrL to hex (result in A)
+            JSR     ASCII2HEX       ; Convert ASCII addrL to hex (result in A)
             PSHA                    ; Push AddrL onto stack
             PSHB                    ; Push AddrH onto stack
             LDX     #DUMPSTR        ; Load dump text
-            JSR     _SERWRITES      ;
+            JSR     SERWRITES       ;
             LDAA    #0              ; Zero counter
             STAA    TEMP
             PULX                    ; Pull AddrH & AddrL (16-bits) into X
 _DUMPMEM1   LDAA    #0
 _DUMPLOOP   LDAB    0,X             ; Load byte from receive buffer
-            JSR     _SERPRTBYTE     ; Print byte in ascii to SCI
-            JSR     _SERPRTSPC      ; Print space
+            JSR     SERPRTBYTE      ; Print byte in ascii to SCI
+            JSR     SERPRTSPC       ; Print space
             INX                     ; Next byte
             INCA                    ; Increment byte count
             CMPA    #$10
             BNE     _DUMPLOOP       ;
-            JSR     _SERPRTCR       ; Print CR to SCI
+            JSR     SERPRTCR        ; Print CR to SCI
             ADDA    TEMP
             STAA    TEMP
             CMPA    #$A0
@@ -663,27 +663,27 @@ _DUMPDONE   PULX                    ; Restore X
 ;; Convert from binary to ASCII and output
 ;; IN: B = byte to convert                
 ;;
-_OUTLEFTH   LSRB                    ; Shift data to right
+OUTLEFTH    LSRB                    ; Shift data to right
             LSRB
             LSRB
             LSRB
-_OUTRIGHTH  ANDB    #$0F            ; Mask top half
+OUTRIGHTH   ANDB    #$0F            ; Mask top half
             ADDB    #$30            ; Convert to ascii
             CMPB    #$39
             BLE     _OUTA           ; Jump if 0-9
             ADDB    #$07            ; Convert to hex A-F
-_OUTA       JSR     _SERWRITEC      ; Output character
+_OUTA       JSR     SERWRITEC       ; Output character
             RTS
 
 
 ;; Print byte to serial port 
 ;; IN: B = byte to be printed 
 ;;
-_SERPRTBYTE PSHB
+SERPRTBYTE  PSHB
             PSHB
-            JSR     _OUTLEFTH       ; Output left half
+            JSR     OUTLEFTH        ; Output left half
             PULB                    ; Retrieve copy
-            JSR     _OUTRIGHTH      ; Output right half
+            JSR     OUTRIGHTH       ; Output right half
             PULB
             RTS
 
@@ -691,32 +691,32 @@ _SERPRTBYTE PSHB
 ;; Print word to serial port 
 ;; IN: D = word to be printed 
 ;;
-_SERPRTWORD PSHA
+SERPRTWORD  PSHA
             PSHB
             TAB
-            JSR     _SERPRTBYTE     ; Print top byte
+            JSR     SERPRTBYTE      ; Print top byte
             PULB                 
-            JSR     _SERPRTBYTE     ; Print low byte
+            JSR     SERPRTBYTE      ; Print low byte
             PULA
             RTS
 
 
 ;; Print LF & CR to serial port
 ;;
-_SERPRTCR   PSHB
+SERPRTCR    PSHB
             LDAB    #CR
-            JSR     _SERWRITEC
+            JSR     SERWRITEC
             LDAB    #LF
-            JSR     _SERWRITEC
+            JSR     SERWRITEC
             PULB
             RTS
 
 
 ;; Print space to serial port 
 ;;
-_SERPRTSPC  PSHB
+SERPRTSPC  PSHB
             LDAB    #SPACE
-            JSR     _SERWRITEC
+            JSR     SERWRITEC
             PULB
             RTS
 
@@ -727,7 +727,7 @@ _SERPRTSPC  PSHB
 ;; IN:  Y = Pointer to string #2                     
 ;; OUT: A = compare status (0 = match, 1 = NO match)
 ;;
-_STRCMP     PSHB                    ; Save B
+STRCMP      PSHB                    ; Save B
             PSHX                    ; Save X
             PSHY                    ; Save Y
             LDAB    #0              ;
@@ -757,10 +757,10 @@ _SCMPDONE   PULY                    ; Restore Y
 
 ;; Clear LCD display 
 ;;
-_LCDCLEAR   PSHA                    ; Save A
+LCDCLEAR    PSHA                    ; Save A
             LDAA    #$1             ; Clear all display and return cursor home
             STAA    DISPC           ;
-            JSR     _LCDWAIT        ;
+            JSR     LCDWAIT         ;
             PULA                    ; Restore A
             RTS                     ; Done
 
@@ -771,7 +771,7 @@ _LCDCLEAR   PSHA                    ; Save A
 ;;                                                  
 ;; NOTE: *** Based on E=2 MHz (8 MHz xtal) ***     
 ;;
-_DELAY_MS   PSHX
+DELAY_MS    PSHX
             LDX     #328
             BRA     _DELAY_MS_1
 _DELAY_MS_0
@@ -789,37 +789,37 @@ _DELAY_MS_1
 ;;                                                   
 ;; NOTE: From the Optrex LCD manual.                 
 ;;
-_LCDINIT    PSHA                    ; Save A
+LCDINIT     PSHA                    ; Save A
             LDAA    #15             ; Wait 15ms to give Vcc time to stabilize
-            JSR     _DELAY_MS       ;
+            JSR     DELAY_MS        ;
             LDAA    #LCD_CONFIG     ; Interface len=8, 2 lines, 5x7 font
             STAA    DISPC           ;
             LDAA    #5              ; Wait 5ms
-            JSR     _DELAY_MS       ;
+            JSR     DELAY_MS        ;
             LDAA    #LCD_CONFIG     ; REPEAT: Interface len=8, 2 lines, 5x7 font
             STAA    DISPC           ;
             LDAA    #1              ; Wait 1ms
-            JSR     _DELAY_MS       ;
+            JSR     DELAY_MS        ;
             LDAA    #LCD_CONFIG     ; REPEAT: Interface len=8, 2 lines, 5x7 font
             STAA    DISPC           ;
-            JSR     _LCDWAIT        ; Busy Flag can now be checked
+            JSR     LCDWAIT         ; Busy Flag can now be checked
             LDAA    #LCD_CONFIG     ; Interface len=8, 2 lines, 5x7 font
             STAA    DISPC           ;
-            JSR     _LCDWAIT        ;
+            JSR     LCDWAIT         ;
             LDAA    #LCD_DISPON     ; Display on, cursor off, cursor blink off
             STAA    DISPC           ;
-            JSR     _LCDWAIT        ;
+            JSR     LCDWAIT         ;
             LDAA    #LCD_HOME       ; Clear all display and return cursor home
             STAA    DISPC           ;
             LDAA    #2              ; Wait 2ms
-            JSR     _DELAY_MS       ;
-            JSR     _LCDWAIT        ;
+            JSR     DELAY_MS        ;
+            JSR     LCDWAIT         ;
             LDAA    #LCD_CRSCFG     ; Increment cursor and don't shift display
             STAA    DISPC           ;
-            JSR     _LCDWAIT        ;
+            JSR     LCDWAIT         ;
             LDAA    #LCD_RAMADDR    ; Set DDRAM address to position 0.
             STAA    DISPC           ;
-            JSR     _LCDWAIT        ;
+            JSR     LCDWAIT         ;
             PULA                    ; Restore A
             RTS                     ; Done
 
@@ -827,11 +827,11 @@ _LCDINIT    PSHA                    ; Save A
 ;; Write LCD string                       
 ;; IN: X = NULL-terimated string to print 
 ;;
-_LCDWRITES  PSHX                    ; Save X
+LCDWRITES   PSHX                    ; Save X
             PSHB                    ; Save B
 _LCDSTRLOOP LDAB    0,X             ; Get next character to be written
             BEQ     _LCDSTRDONE     ; If NULL terminator, done
-            JSR     _LCDWRITEC      ; Write character to SCI
+            JSR     LCDWRITEC       ; Write character to SCI
             INX                     ; Next character
             BRA     _LCDSTRLOOP     ; Continue
 _LCDSTRDONE PULB                    ; Restore B
@@ -843,20 +843,20 @@ _LCDSTRDONE PULB                    ; Restore B
 ;; IN: B = character to print 
 ;; NOTE: CR & LF are filtered 
 ;;
-_LCDWRITEC  PSHB                    ; Save B
+LCDWRITEC   PSHB                    ; Save B
             CMPB    #CR             ; Don't do CRs
             BEQ     _LCDWRTDONE     ;
             CMPB    #LF             ; Don't do LFs
             BEQ     _LCDWRTDONE     ;
             STAB    DISPD           ; Write character to display
-            JSR     _LCDWAIT        ;
+            JSR     LCDWAIT         ;
 _LCDWRTDONE PULB                    ; Restore B
             RTS                     ; Done
 
 
 ;; LCD wait loop 
 ;;
-_LCDWAIT    PSHA                    ; Save A
+LCDWAIT     PSHA                    ; Save A
 _LCDWTLOOP  LDAA    DISPC           ; Wait for LCD to process last request
             ANDA    #LCD_WAITFLG    ;
             BNE     _LCDWTLOOP      ; Not ready to take new data
@@ -867,7 +867,7 @@ _LCDWTLOOP  LDAA    DISPC           ; Wait for LCD to process last request
 ;; SWI handler                         
 ;; IN: A = command id to be executed   
 ;;
-_SWIHDLR    PSHA                    ; Save A
+SWIHDLR     PSHA                    ; Save A
             PSHB                    ; Save B
             PSHX                    ; Save X
             LDX     #APICMDTBL      ; Load API command table base
@@ -889,14 +889,14 @@ _SWIHDLR    PSHA                    ; Save A
 ;;
 WELCOMESTR  FCB CR
             FCB LF
-            FCC "68MICRO Ver 0.5"
+            FCC "68MICRO Ver 0.6"
             FCB CR
             FCB LF
             FCB 0
 
 ;; Copyright string
 ;;
-COPYRGHTSTR FCC "Copyright (c) 2012, Jeff Glaum.  All rights reserved."
+COPYRGHTSTR FCC "Copyright (c) 2026, Jeff Glaum.  All rights reserved."
             FCB CR
             FCB LF
             FCB 0
@@ -986,7 +986,7 @@ PROMPTSTR   FCC "> "
          
 ;; Ready to receive string
 ;;
-RECEIVESTR  FCC "Ready to receive S-Record data from host..."
+RECEIVESTR  FCC "Ready to receive s-record data from host..."
             FCB CR
             FCB LF
             FCB 0
@@ -999,7 +999,7 @@ JUMPINGSTR  FCC "Jumping..."
 GETADDRSTR  FCC "Address: "
             FCB 0
 
-SRECERRSTR  FCC "S-Record Error!"
+SRECERRSTR  FCC "S-record error!"
             FCB 0
 
 ;; Help text
@@ -1038,73 +1038,73 @@ HELPTEXT    FCB CR
 APIRTNSTXT  
             FCB CR
             FCB LF
-            FCC "01: _ASCII2HEX"
+            FCC "01: ASCII2HEX"
             FCB CR
             FCB LF
-            FCC "02: _CLEARINPUT"
+            FCC "02: CLEARINPUT"
             FCB CR
             FCB LF
-            FCC "03: _DELAY_MS"
+            FCC "03: DELAY_MS"
             FCB CR
             FCB LF
-            FCC "04: _LCDCLEAR"
+            FCC "04: LCDCLEAR"
             FCB CR
             FCB LF
-            FCC "05: _LCDINIT"
+            FCC "05: LCDINIT"
             FCB CR
             FCB LF
-            FCC "06: _LCDWAIT"
+            FCC "06: LCDWAIT"
             FCB CR
             FCB LF
-            FCC "07: _LCDWRITEC"
+            FCC "07: LCDWRITEC"
             FCB CR
             FCB LF
-            FCC "08: _LCDWRITES"
+            FCC "08: LCDWRITES"
             FCB CR
             FCB LF
-            FCC "09: _OUTLEFTH"
+            FCC "09: OUTLEFTH"
             FCB CR
             FCB LF
-            FCC "0A: _OUTRIGHTH"
+            FCC "0A: OUTRIGHTH"
             FCB CR
             FCB LF
-            FCC "0B: _SERCLEAR"
+            FCC "0B: SERCLEAR"
             FCB CR
             FCB LF
-            FCC "0C: _SERINIT"
+            FCC "0C: SERINIT"
             FCB CR
             FCB LF
-            FCC "0D: _SERPRTBYTE"
+            FCC "0D: SERPRTBYTE"
             FCB CR
             FCB LF
-            FCC "0E: _SERPRTCR"
+            FCC "0E: SERPRTCR"
             FCB CR
             FCB LF
-            FCC "0F: _SERPRTSPC"
+            FCC "0F: SERPRTSPC"
             FCB CR
             FCB LF
-            FCC "10: _SERREADC"
+            FCC "10: SERREADC"
             FCB CR
             FCB LF
-            FCC "11: _SERREADCx"
+            FCC "11: SERREADCx"
             FCB CR
             FCB LF
-            FCC "12: _SERREADRAW"
+            FCC "12: SERREADRAW"
             FCB CR
             FCB LF
-            FCC "13: _SERREADS"
+            FCC "13: SERREADS"
             FCB CR
             FCB LF
-            FCC "14: _SERWRITEC"
+            FCC "14: SERWRITEC"
             FCB CR
             FCB LF
-            FCC "15: _SERWRITES"
+            FCC "15: SERWRITES"
             FCB CR
             FCB LF
-            FCC "16: _STRCMP"
+            FCC "16: STRCMP"
             FCB CR
             FCB LF
-            FCC "17: _TOUPPER"
+            FCC "17: TOUPPER"
             FCB CR
             FCB LF
             FCB 0
@@ -1113,37 +1113,37 @@ APIRTNSTXT
 ;; Monitor command table
 ;;
 APICMDTBL   EQU *
-            FDB 0000             ; 00
-            FDB _ASCII2HEX       ; 01
-            FDB _CLEARINPUT      ; 02
-            FDB _DELAY_MS        ; 03
-            FDB _LCDCLEAR        ; 04
-            FDB _LCDINIT         ; 05
-            FDB _LCDWAIT         ; 06 
-            FDB _LCDWRITEC       ; 07 
-            FDB _LCDWRITES       ; 08 
-            FDB _OUTLEFTH        ; 09
-            FDB _OUTRIGHTH       ; 0A
-            FDB _SERCLEAR        ; 0B
-            FDB _SERINIT         ; 0C
-            FDB _SERPRTBYTE      ; 0D
-            FDB _SERPRTCR        ; 0E
-            FDB _SERPRTSPC       ; 0F
-            FDB _SERREADC        ; 10
-            FDB _SERREADCx       ; 11
-            FDB _SERREADRAW      ; 12
-            FDB _SERREADS        ; 13
-            FDB _SERWRITEC       ; 14
-            FDB _SERWRITES       ; 15
-            FDB _STRCMP          ; 16
-            FDB _TOUPPER         ; 17
+            FDB 0000            ; 00
+            FDB ASCII2HEX       ; 01
+            FDB CLEARINPUT      ; 02
+            FDB DELAY_MS        ; 03
+            FDB LCDCLEAR        ; 04
+            FDB LCDINIT         ; 05
+            FDB LCDWAIT         ; 06 
+            FDB LCDWRITEC       ; 07 
+            FDB LCDWRITES       ; 08 
+            FDB OUTLEFTH        ; 09
+            FDB OUTRIGHTH       ; 0A
+            FDB SERCLEAR        ; 0B
+            FDB SERINIT         ; 0C
+            FDB SERPRTBYTE      ; 0D
+            FDB SERPRTCR        ; 0E
+            FDB SERPRTSPC       ; 0F
+            FDB SERREADC        ; 10
+            FDB SERREADCx       ; 11
+            FDB SERREADRAW      ; 12
+            FDB SERREADS        ; 13
+            FDB SERWRITEC       ; 14
+            FDB SERWRITES       ; 15
+            FDB STRCMP          ; 16
+            FDB TOUPPER         ; 17
 
 
 ;; Interrupt vectors 
 ;;
             ORG $FFF6           ; SWI Vector
-_SWI_VECT   FDB _SWIHDLR 
+_SWI_VECT   FDB SWIHDLR 
 
             ORG $FFFE           ; Reset vector
-_RESET_VECT FDB _WEEZER
+_RESET_VECT FDB WEEZER
 
